@@ -2,5 +2,5 @@
 .idea/modules.xml
 .idea/Parallel-Decoding.iml
 .idea/inspectionProfiles/profiles_settings.xml
-__pycache__/model.cpython-312.pyc
-__pycache__/train.cpython-312.pyc
+__pycache__/
+*.pyc

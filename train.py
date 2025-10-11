@@ -1,11 +1,7 @@
 import argparse
-import json
-from collections import OrderedDict
 from typing import Any, Dict, List
 
 import torch
-from datasets import Dataset, DatasetDict, load_dataset
-from huggingface_hub import hf_hub_download
 from transformers import Trainer, TrainingArguments
 
 from model import (
@@ -13,6 +9,7 @@ from model import (
     build_flat_linear_layout,
     set_rope_pos2d,
 )
+from data_utils import load_grouped_squad
 
 
 class ParallelDecodingDataCollator:
@@ -30,14 +27,21 @@ class ParallelDecodingDataCollator:
         def _clean(text: str) -> str:
             return text.strip().replace("\n", " ")
 
+        def _first_answer(answers: Any) -> str:
+            if isinstance(answers, list):
+                for candidate in answers:
+                    if isinstance(candidate, str) and candidate.strip():
+                        return candidate
+            return "<no_answer>"
+
         main_question = _clean(qas[0].get("question", ""))
-        main_answer = _clean(qas[0].get("answer", "<no_answer>"))
+        main_answer = _clean(_first_answer(qas[0].get("answers", [])))
         main = f"背景: {context}\n问题1: {main_question}\n答案: {main_answer}"
 
         branches: List[str] = []
         for idx, qa in enumerate(qas[1:], start=2):
             question = _clean(qa.get("question", ""))
-            answer = _clean(qa.get("answer", "<no_answer>"))
+            answer = _clean(_first_answer(qa.get("answers", [])))
             branches.append(f"问题{idx}: {question}\n答案: {answer}")
 
         return {"main": main, "branches": branches}
@@ -103,101 +107,12 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--max-train-samples", type=int)
     parser.add_argument("--max-eval-samples", type=int)
+    parser.add_argument("--min-questions", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
+    parser.add_argument("--local-files-only", action="store_true")
     return parser.parse_args()
-
-
-def _default_answer_text(example: Dict[str, Any]) -> str:
-    answers = example.get("answers", {})
-    if isinstance(answers, dict):
-        texts = answers.get("text")
-        if texts:
-            return texts[0]
-    return "<no_answer>"
-
-
-def _group_squad_split(split: Dataset, max_questions: int, min_questions: int = 1) -> Dataset:
-    buckets: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-    for example in split:
-        context = example.get("context", "")
-        entry = buckets.setdefault(context, {"context": context, "qas": []})
-        entry["qas"].append(
-            {
-                "question": example.get("question", ""),
-                "answer": _default_answer_text(example),
-            }
-        )
-
-    grouped_examples: List[Dict[str, Any]] = []
-    for entry in buckets.values():
-        qas = entry["qas"]
-        if len(qas) < min_questions:
-            continue
-        grouped_examples.append(
-            {
-                "context": entry["context"],
-                "qas": qas[: max_questions],
-            }
-        )
-
-    return Dataset.from_list(grouped_examples)
-
-
-def load_squad_dataset(
-    max_train_samples: int | None = None,
-    max_eval_samples: int | None = None,
-    max_questions_per_context: int = 4,
-    min_questions_per_context: int = 2,
-) -> DatasetDict:
-    try:
-        raw_dataset = load_dataset("rajpurkar/squad")
-    except ValueError as exc:
-        if "Feature type 'List'" not in str(exc):
-            raise
-
-        def _load_split(filename: str) -> Dataset:
-            path = hf_hub_download("rajpurkar/squad", filename)
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            records = []
-            for article in payload.get("data", []):
-                for paragraph in article.get("paragraphs", []):
-                    context = paragraph.get("context", "")
-                    for qa in paragraph.get("qas", []):
-                        answers = qa.get("answers", [])
-                        texts = [ans.get("text", "") for ans in answers] or ["<no_answer>"]
-                        records.append(
-                            {
-                                "context": context,
-                                "question": qa.get("question", ""),
-                                "answers": {"text": texts},
-                            }
-                        )
-            return Dataset.from_list(records)
-
-        raw_dataset = DatasetDict(
-            {
-                "train": _load_split("train-v1.1.json"),
-                "validation": _load_split("dev-v1.1.json"),
-            }
-        )
-
-    grouped = DatasetDict(
-        {
-            split: _group_squad_split(raw_dataset[split], max_questions_per_context, min_questions_per_context)
-            for split in raw_dataset
-        }
-    )
-
-    if max_train_samples:
-        grouped["train"] = grouped["train"].select(range(max_train_samples))
-    if "validation" in grouped and max_eval_samples:
-        grouped["validation"] = grouped["validation"].select(range(max_eval_samples))
-
-    return grouped
-
 
 def main():
     args = parse_args()
@@ -210,13 +125,17 @@ def main():
     tokenizer = decoder.tokenizer
 
     max_questions = max(1, args.max_branches + 1)
-    dataset = load_squad_dataset(
-        max_train_samples=args.max_train_samples,
-        max_eval_samples=args.max_eval_samples,
+    dataset = load_grouped_squad(
+        splits=("train", "validation"),
         max_questions_per_context=max_questions,
-        min_questions_per_context=2,
+        min_questions_per_context=max(1, args.min_questions),
+        max_samples_per_split={
+            "train": args.max_train_samples,
+            "validation": args.max_eval_samples,
+        },
+        local_files_only=args.local_files_only,
     )
-    train_dataset = dataset["train"]
+    train_dataset = dataset.get("train")
     eval_dataset = dataset.get("validation")
 
     data_collator = ParallelDecodingDataCollator(

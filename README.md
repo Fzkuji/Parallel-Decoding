@@ -51,10 +51,29 @@ python train.py \
 torchrun --nproc_per_node 8 train.py --batch-size 1 --eval-batch-size 1
 ```
 
+## 评估（原始模型 vs. 分支模型）
+
+`evaluate.py` 会加载 SQuAD `validation` 集，对比原始 Hugging Face 模型与分支模型的精确匹配率：
+
+```bash
+python evaluate.py \
+  --base-model Qwen/Qwen3-4B \
+  --ft-model ./parallel-decoder-squad \
+  --max-branches 3 \
+  --max-eval-samples 64 \
+  --max-new-tokens 32
+```
+
+- **Baseline**：逐个问题生成答案，计算标准化后的 Exact Match。
+- **Parallel**：将同一背景的问题聚合成分支样本，并行生成多条答案后再对每条答案计算 Exact Match。
+
+脚本会打印两种设置下的准确率，方便观察微调是否带来收益。若模型和数据都已缓存，可加 `--local-files-only` 避免联网。
+
 ## 目录结构
 - `model.py`：核心模块，包含 RoPE 补丁、布局构建、推理接口以及结果数据结构。
 - `python.py`：演示脚本，可快速验证推理流程。
 - `train.py`：微调脚本，含自定义数据整理与 `Trainer` 子类。
+- `evaluate.py`：评估脚本，对比原始模型与分支模型在 SQuAD 上的精确匹配率。
 - `parallel-decoder-squad/`：默认输出目录（训练权重、分词器等会保存于此）。
 - `LICENSE`：项目许可证。
 
@@ -62,6 +81,13 @@ torchrun --nproc_per_node 8 train.py --batch-size 1 --eval-batch-size 1
 - 若无法访问 Hugging Face，请先行下载模型权重与分词器到本地，并在 `ParallelDecoder` 初始化时传入本地路径；也可以通过设置 `HF_HUB_ENABLE_HF_TRANSFER=0` 禁止额外的 HTTP 请求。
 - 当前实现默认使用贪心解码。若要尝试采样，可在 `ParallelDecoder.generate` 调用中传入 `temperature` 与 `do_sample=True`。
 - 项目仍处于实验阶段，数据预处理与分支布局策略都可以根据需求调整。
+
+## 方案思路小结
+
+1. **建模**：借助 2D RoPE 将同一段背景下的多个问题映射到不同的 x 轴分支，保证上下文共享、答案互不干扰。
+2. **训练**：把 SQuAD 中相同 `context` 的问答合并成单条样本，主干预测问题 1，其余问题作为分支，让模型在单次前向中学习多条答案。
+3. **推理**：`ParallelDecoder.generate` 按分支轮询，每次只扩展当前分支的一个 token，并保持缓存独立，实现并行式生成。
+4. **评估**：`evaluate.py` 先跑原始模型的逐问解答，再用分支模型在相同样本上生成答案，对比 Exact Match 以验证并行布局的收益。
 
 ## 许可证
 
