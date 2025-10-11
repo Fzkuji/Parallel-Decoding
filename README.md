@@ -50,7 +50,8 @@ Parallel-Decoding 是一个实验性项目，用于探索如何在大语言模�
 ```bash
 python pretrain.py \
   --dataset-name HuggingFaceFW/fineweb-edu \
-  --dataset-split sample-10BT \
+  --dataset-config sample-10BT \
+  --dataset-split train \
   --branch-count 4 \
   --seq-length 1024 \
   --batch-size 2 \
@@ -58,6 +59,7 @@ python pretrain.py \
 ```
 
 - `--branch-count` 决定每个样本并行的分支数量；`--seq-length` 为每个分支的截断长度。
+- `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
 

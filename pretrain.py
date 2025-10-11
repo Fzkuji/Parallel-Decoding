@@ -18,6 +18,7 @@ class FineWebColumnarDataset(IterableDataset):
         seq_length: int,
         split: str,
         dataset_name: str = "HuggingFaceFW/fineweb-edu",
+        config_name: Optional[str] = None,
         max_samples: Optional[int] = None,
         local_files_only: bool = False,
     ) -> None:
@@ -27,17 +28,27 @@ class FineWebColumnarDataset(IterableDataset):
         self.seq_length = seq_length
         self.split = split
         self.dataset_name = dataset_name
+        self.config_name = config_name
         self.max_samples = max_samples
         self.local_files_only = local_files_only
 
     def __iter__(self):
         download_config = DownloadConfig(local_files_only=True) if self.local_files_only else None
-        dataset = load_dataset(
-            self.dataset_name,
-            split=self.split,
-            streaming=True,
-            download_config=download_config,
-        )
+        if self.config_name is not None:
+            dataset = load_dataset(
+                self.dataset_name,
+                self.config_name,
+                split=self.split,
+                streaming=True,
+                download_config=download_config,
+            )
+        else:
+            dataset = load_dataset(
+                self.dataset_name,
+                split=self.split,
+                streaming=True,
+                download_config=download_config,
+            )
         buffer: List[str] = []
         produced = 0
         for row in dataset:
@@ -134,7 +145,8 @@ def parse_args():
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-4B")
     parser.add_argument("--output-dir", type=str, default="./pretrained-columnar")
     parser.add_argument("--dataset-name", type=str, default="HuggingFaceFW/fineweb-edu")
-    parser.add_argument("--dataset-split", type=str, default="sample-10BT")
+    parser.add_argument("--dataset-config", type=str, default="sample-10BT")
+    parser.add_argument("--dataset-split", type=str, default="train")
     parser.add_argument("--branch-count", type=int, default=4)
     parser.add_argument("--seq-length", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -151,6 +163,15 @@ def parse_args():
 def main():
     args = parse_args()
 
+    known_splits = {"train", "validation", "test"}
+    if args.dataset_split not in known_splits:
+        if args.dataset_config in (None, args.dataset_split):
+            args.dataset_config = args.dataset_split
+        args.dataset_split = "train"
+
+    if args.dataset_config is not None and args.dataset_config.strip() == "":
+        args.dataset_config = None
+
     decoder = ParallelDecoder(model_name=args.model_name)
     model = decoder.model
     tokenizer = decoder.tokenizer
@@ -161,6 +182,7 @@ def main():
         seq_length=args.seq_length,
         split=args.dataset_split,
         dataset_name=args.dataset_name,
+        config_name=args.dataset_config,
         max_samples=args.max_samples,
         local_files_only=args.local_files_only,
     )
