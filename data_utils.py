@@ -6,7 +6,7 @@ import json
 from collections import OrderedDict
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
 
-from datasets import Dataset, DatasetDict, load_dataset
+from datasets import Dataset, DatasetDict, DownloadConfig, load_dataset
 from huggingface_hub import hf_hub_download
 
 
@@ -59,7 +59,8 @@ def _group_squad_split(
 
 def _load_squad_raw(local_files_only: bool = False) -> DatasetDict:
     try:
-        return load_dataset(_SQUAD_REPO, local_files_only=local_files_only)
+        download_config = DownloadConfig(local_files_only=local_files_only)
+        return load_dataset(_SQUAD_REPO, download_config=download_config)
     except ValueError as exc:
         if "Feature type 'List'" not in str(exc):
             raise
@@ -130,4 +131,3 @@ def load_grouped_squad(
 __all__ = [
     "load_grouped_squad",
 ]
-
