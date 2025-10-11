@@ -59,6 +59,7 @@ python pretrain.py \
 ```
 
 - `--branch-count` 决定每个样本并行的分支数量；`--seq-length` 为每个分支的截断长度。
+- 默认使用本地（非 streaming）加载。如需避免一次性下载，可附加 `--streaming` 切换到 HF streaming 接口。
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。

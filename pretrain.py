@@ -21,6 +21,7 @@ class FineWebColumnarDataset(IterableDataset):
         config_name: Optional[str] = None,
         max_samples: Optional[int] = None,
         local_files_only: bool = False,
+        streaming: bool = False,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
@@ -31,6 +32,7 @@ class FineWebColumnarDataset(IterableDataset):
         self.config_name = config_name
         self.max_samples = max_samples
         self.local_files_only = local_files_only
+        self.streaming = streaming
 
     def __iter__(self):
         download_config = DownloadConfig(local_files_only=True) if self.local_files_only else None
@@ -39,14 +41,14 @@ class FineWebColumnarDataset(IterableDataset):
                 self.dataset_name,
                 self.config_name,
                 split=self.split,
-                streaming=True,
+                streaming=self.streaming,
                 download_config=download_config,
             )
         else:
             dataset = load_dataset(
                 self.dataset_name,
                 split=self.split,
-                streaming=True,
+                streaming=self.streaming,
                 download_config=download_config,
             )
         buffer: List[str] = []
@@ -157,6 +159,7 @@ def parse_args():
     parser.add_argument("--max-samples", type=int, help="Limit number of training samples from the iterable dataset")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument("--streaming", action="store_true", help="Use HuggingFace streaming dataset interface")
     return parser.parse_args()
 
 
@@ -185,6 +188,7 @@ def main():
         config_name=args.dataset_config,
         max_samples=args.max_samples,
         local_files_only=args.local_files_only,
+        streaming=args.streaming,
     )
 
     collator = ColumnarPretrainCollator(
