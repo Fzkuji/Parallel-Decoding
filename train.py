@@ -65,8 +65,23 @@ class ParallelDecodingDataCollator:
 
 class ParallelDecodingTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        pos2d = inputs.pop("pos2d").to(model.device)
-        set_rope_pos2d(model, pos2d)
+        pos2d_tensor = inputs.pop("pos2d")
+
+        if isinstance(model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
+            module = model.module
+        else:
+            module = model
+
+        input_ids = inputs.get("input_ids")
+        if isinstance(input_ids, torch.Tensor):
+            target_device = input_ids.device
+        else:
+            try:
+                target_device = next(module.parameters()).device
+            except StopIteration:
+                target_device = torch.device("cpu")
+
+        set_rope_pos2d(module, pos2d_tensor.to(target_device))
         outputs = model(
             use_cache=False,
             **inputs,
