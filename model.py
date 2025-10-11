@@ -208,17 +208,10 @@ def build_flat_linear_layout(
         max_vertical = max([main_len] + branch_lens) if branch_lens else main_len
 
         pos2d_pieces: List[torch.Tensor] = []
-        branch_ids: List[int] = []
-        branch_lengths: List[int] = []
-        branch_start_y: List[int] = []
-
         if main_len > 0:
             y_main = torch.arange(main_len, device=device)
             x_main = torch.zeros_like(y_main)
             pos2d_pieces.append(torch.stack([x_main, y_main], dim=-1))
-        branch_ids.append(0)
-        branch_lengths.append(main_len)
-        branch_start_y.append(0)
 
         for j, blen in enumerate(branch_lens, start=1):
             if blen > 0:
@@ -226,24 +219,44 @@ def build_flat_linear_layout(
                 y_branch = torch.arange(blen, device=device) + start_y
                 x_branch = torch.full_like(y_branch, j)
                 pos2d_pieces.append(torch.stack([x_branch, y_branch], dim=-1))
-                branch_lengths.append(blen)
-                branch_start_y.append(start_y)
-            else:
-                branch_lengths.append(0)
-                branch_start_y.append(max_vertical)
-            branch_ids.append(j)
 
         if pos2d_pieces:
             pos2d_seq = torch.cat(pos2d_pieces, dim=0)
         else:
             pos2d_seq = torch.zeros(1, 2, device=device)
 
-        cur_len = pos2d_seq.size(0)
+        if pos2d_seq.size(0) > global_T:
+            pos2d_seq = pos2d_seq[:global_T]
+
+        effective_pos2d = pos2d_seq
+
+        branch_order: List[int] = []
+        branch_stats: Dict[int, Dict[str, int]] = {}
+        for token in effective_pos2d:
+            branch_id = int(token[0].item())
+            start_y = int(token[1].item())
+            if branch_id not in branch_stats:
+                branch_stats[branch_id] = {"start": start_y, "len": 1}
+                branch_order.append(branch_id)
+            else:
+                branch_stats[branch_id]["len"] += 1
+                branch_stats[branch_id]["start"] = min(branch_stats[branch_id]["start"], start_y)
+
+        if not branch_order:
+            branch_order = [0]
+            branch_stats = {0: {"start": 0, "len": 0}}
+
+        branch_ids = branch_order
+        branch_lengths = [branch_stats[b]["len"] for b in branch_order]
+        branch_start_y = [branch_stats[b]["start"] for b in branch_order]
+
+        cur_len = effective_pos2d.size(0)
         pad_len = global_T - cur_len
         if pad_len > 0:
-            pad_zeros = torch.zeros(pad_len, 2, device=device, dtype=pos2d_seq.dtype)
-            pos2d_seq = torch.cat([pos2d_seq, pad_zeros], dim=0)
-        pos2d_batch.append(pos2d_seq[None, :, :])
+            pad_zeros = torch.zeros(pad_len, 2, device=device, dtype=effective_pos2d.dtype)
+            effective_pos2d = torch.cat([effective_pos2d, pad_zeros], dim=0)
+
+        pos2d_batch.append(effective_pos2d[None, :, :])
 
         metadata.append(LayoutMetadata(branch_ids=branch_ids, branch_lengths=branch_lengths, branch_start_y=branch_start_y))
 
