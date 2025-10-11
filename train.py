@@ -8,6 +8,7 @@ from model import (
     ParallelDecoder,
     build_flat_linear_layout,
     set_rope_pos2d,
+    build_columnar_causal_mask,
 )
 from data_utils import load_grouped_squad
 
@@ -34,12 +35,10 @@ class ParallelDecodingDataCollator:
                         return candidate
             return "<no_answer>"
 
-        main_question = _clean(qas[0].get("question", ""))
-        main_answer = _clean(_first_answer(qas[0].get("answers", [])))
-        main = f"背景: {context}\n问题1: {main_question}\n答案: {main_answer}"
+        main = f"背景: {context}"
 
         branches: List[str] = []
-        for idx, qa in enumerate(qas[1:], start=2):
+        for idx, qa in enumerate(qas, start=1):
             question = _clean(qa.get("question", ""))
             answer = _clean(_first_answer(qa.get("answers", [])))
             branches.append(f"问题{idx}: {question}\n答案: {answer}")
@@ -63,6 +62,7 @@ class ParallelDecodingDataCollator:
             "attention_mask": layout.attention_mask,
             "position_ids": layout.pos1d,
             "pos2d": layout.pos2d,
+            "time_ids": layout.time_ids,
             "labels": labels,
         }
 
@@ -70,6 +70,8 @@ class ParallelDecodingDataCollator:
 class ParallelDecodingTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         pos2d_tensor = inputs.pop("pos2d")
+        time_ids = inputs.pop("time_ids")
+        pad_mask = inputs["attention_mask"]
 
         if isinstance(model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
             module = model.module
@@ -86,6 +88,8 @@ class ParallelDecodingTrainer(Trainer):
                 target_device = torch.device("cpu")
 
         set_rope_pos2d(module, pos2d_tensor.to(target_device))
+        attn_mask = build_columnar_causal_mask(time_ids.to(target_device), pad_mask.to(target_device))
+        inputs["attention_mask"] = attn_mask
         outputs = model(
             use_cache=False,
             **inputs,

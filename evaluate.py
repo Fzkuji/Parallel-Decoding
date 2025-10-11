@@ -112,11 +112,10 @@ def _build_branch_sample(context: str, qas: Sequence[Dict[str, Sequence[str]]]) 
                 return ans
         return "<no_answer>"
 
-    main_question = _clean(qas[0].get("question", ""))
-    main_prompt = f"背景: {context}\n问题1: {main_question}\n答案:"
+    main_prompt = f"背景: {context}"
 
     branches: List[str] = []
-    for idx, qa in enumerate(qas[1:], start=2):
+    for idx, qa in enumerate(qas, start=1):
         question = _clean(qa.get("question", ""))
         branches.append(f"问题{idx}: {question}\n答案:")
 

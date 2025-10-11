@@ -101,6 +101,8 @@ class LayoutMetadata:
     branch_ids: List[int]
     branch_lengths: List[int]
     branch_start_y: List[int]
+    branch_pos1d_end: List[int]
+    branch_pos1d_end: List[int]
 
 
 @dataclass
@@ -111,6 +113,57 @@ class BatchLayout:
     pos2d: torch.Tensor
     metadata: List[LayoutMetadata]
     pad_id: int
+    time_ids: torch.Tensor
+
+
+def build_columnar_causal_mask(time_ids: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
+    """Construct a causal mask based on column-aligned time indices.
+
+    Args:
+        time_ids: Long tensor of shape (batch, seq_len) containing column indices for each token. Padding positions
+            should be set to -1.
+        pad_mask: Long/Bool tensor of shape (batch, seq_len) with 1 for valid tokens and 0 for padding.
+
+    Returns:
+        Float tensor of shape (batch, 1, seq_len, seq_len) where disallowed positions are filled with -inf.
+    """
+
+    device = time_ids.device
+    batch, seq_len = time_ids.shape
+    pad_bool = pad_mask.bool()
+    time_clean = torch.where(pad_bool, time_ids, torch.full_like(time_ids, -1))
+
+    time_i = time_clean.unsqueeze(2)
+    time_j = time_clean.unsqueeze(1)
+
+    allowed = time_j < time_i
+    eye = torch.eye(seq_len, device=device, dtype=torch.bool).unsqueeze(0)
+    allowed = allowed | eye
+
+    allowed = allowed & pad_bool.unsqueeze(2) & pad_bool.unsqueeze(1)
+
+    mask = torch.full((batch, 1, seq_len, seq_len), fill_value=torch.finfo(torch.float32).min, device=device)
+    mask = mask.masked_fill(allowed[:, None, :, :], 0.0)
+    return mask
+
+
+def build_incremental_causal_mask(time_list: List[int], device: torch.device) -> torch.Tensor:
+    """Build a causal mask for a single new token appended to an existing sequence.
+
+    Args:
+        time_list: list of time indices including the newly appended token as the last element.
+        device: target device for the mask tensor.
+    """
+
+    total_len = len(time_list)
+    if total_len == 0:
+        raise ValueError("time_list must contain at least one element")
+    new_time = time_list[-1]
+    mask = torch.full((1, 1, 1, total_len), fill_value=torch.finfo(torch.float32).min, device=device)
+    for idx, t in enumerate(time_list):
+        if t >= 0 and (t < new_time or idx == total_len - 1):
+            mask[0, 0, 0, idx] = 0.0
+    return mask
 
 
 @dataclass
@@ -168,7 +221,6 @@ def build_flat_linear_layout(
             tokenizer(txt, add_special_tokens=False, return_tensors="pt").input_ids[0]
             for txt in branches
         ]
-        join_y = s.get("join_y", find_join_y_by_first_plus(s["main"], tokenizer))
 
         ids_list = [main_ids] + branches_ids if branches_ids else [main_ids]
         seq = torch.cat(ids_list, dim=0) if ids_list else torch.full((1,), tokenizer.eos_token_id or 0, dtype=torch.long)
@@ -176,7 +228,6 @@ def build_flat_linear_layout(
             {
                 "main_len": main_ids.numel(),
                 "branches_lens": [x.numel() for x in branches_ids],
-                "join_y": join_y,
                 "seq": seq,
             }
         )
@@ -189,6 +240,7 @@ def build_flat_linear_layout(
     attn_batch: List[torch.Tensor] = []
     pos1d_batch: List[torch.Tensor] = []
     pos2d_batch: List[torch.Tensor] = []
+    time_batch: List[torch.Tensor] = []
 
     for t in tokenized:
         seq = t["seq"].to(device)
@@ -205,7 +257,7 @@ def build_flat_linear_layout(
 
         main_len = t["main_len"]
         branch_lens = t["branches_lens"]
-        max_vertical = max([main_len] + branch_lens) if branch_lens else main_len
+        max_branch_len = max(branch_lens) if branch_lens else 0
 
         pos2d_pieces: List[torch.Tensor] = []
         if main_len > 0:
@@ -215,7 +267,7 @@ def build_flat_linear_layout(
 
         for j, blen in enumerate(branch_lens, start=1):
             if blen > 0:
-                start_y = max_vertical - blen
+                start_y = main_len + (max_branch_len - blen)
                 y_branch = torch.arange(blen, device=device) + start_y
                 x_branch = torch.full_like(y_branch, j)
                 pos2d_pieces.append(torch.stack([x_branch, y_branch], dim=-1))
@@ -232,7 +284,8 @@ def build_flat_linear_layout(
 
         branch_order: List[int] = []
         branch_stats: Dict[int, Dict[str, int]] = {}
-        for token in effective_pos2d:
+        branch_last_pos1d: Dict[int, int] = {}
+        for idx, token in enumerate(effective_pos2d):
             branch_id = int(token[0].item())
             start_y = int(token[1].item())
             if branch_id not in branch_stats:
@@ -241,29 +294,44 @@ def build_flat_linear_layout(
             else:
                 branch_stats[branch_id]["len"] += 1
                 branch_stats[branch_id]["start"] = min(branch_stats[branch_id]["start"], start_y)
+            branch_last_pos1d[branch_id] = idx
 
         if not branch_order:
             branch_order = [0]
             branch_stats = {0: {"start": 0, "len": 0}}
+            branch_last_pos1d = {0: -1}
 
         branch_ids = branch_order
         branch_lengths = [branch_stats[b]["len"] for b in branch_order]
         branch_start_y = [branch_stats[b]["start"] for b in branch_order]
+        branch_pos1d_end = [branch_last_pos1d.get(b, -1) for b in branch_order]
 
+        time_row = effective_pos2d[:, 1].long()
         cur_len = effective_pos2d.size(0)
         pad_len = global_T - cur_len
         if pad_len > 0:
             pad_zeros = torch.zeros(pad_len, 2, device=device, dtype=effective_pos2d.dtype)
             effective_pos2d = torch.cat([effective_pos2d, pad_zeros], dim=0)
+            pad_times = torch.full((pad_len,), -1, device=device, dtype=torch.long)
+            time_row = torch.cat([time_row, pad_times], dim=0)
 
         pos2d_batch.append(effective_pos2d[None, :, :])
+        time_batch.append(time_row[None, :])
 
-        metadata.append(LayoutMetadata(branch_ids=branch_ids, branch_lengths=branch_lengths, branch_start_y=branch_start_y))
+        metadata.append(
+            LayoutMetadata(
+                branch_ids=branch_ids,
+                branch_lengths=branch_lengths,
+                branch_start_y=branch_start_y,
+                branch_pos1d_end=branch_pos1d_end,
+            )
+        )
 
     input_ids = torch.cat(input_ids_batch, dim=0)
     attention_mask = torch.cat(attn_batch, dim=0)
     pos1d = torch.cat(pos1d_batch, dim=0)
     pos2d = torch.cat(pos2d_batch, dim=0)
+    time_ids = torch.cat(time_batch, dim=0)
 
     return BatchLayout(
         input_ids=input_ids,
@@ -272,6 +340,7 @@ def build_flat_linear_layout(
         pos2d=pos2d,
         metadata=metadata,
         pad_id=pad_id,
+        time_ids=time_ids,
     )
 
 
@@ -350,9 +419,10 @@ class ParallelDecoder:
     def forward(self, samples: Sequence[Dict[str, Any]], pad_to: Optional[int] = None, **forward_kwargs):
         layout = self.build_layout(samples, pad_to=pad_to)
         set_rope_pos2d(self.model, layout.pos2d)
+        causal_mask = build_columnar_causal_mask(layout.time_ids.to(self.device), layout.attention_mask.to(self.device))
         return self.model(
             input_ids=layout.input_ids,
-            attention_mask=layout.attention_mask,
+            attention_mask=causal_mask,
             position_ids=layout.pos1d,
             use_cache=False,
             output_hidden_states=True,
@@ -373,9 +443,10 @@ class ParallelDecoder:
         layout = self.build_layout(samples, pad_to=pad_to)
 
         set_rope_pos2d(self.model, layout.pos2d)
+        causal_mask = build_columnar_causal_mask(layout.time_ids.to(self.device), layout.attention_mask.to(self.device))
         outputs = self.model(
             input_ids=layout.input_ids,
-            attention_mask=layout.attention_mask,
+            attention_mask=causal_mask,
             position_ids=layout.pos1d,
             use_cache=True,
             return_dict=True,
@@ -385,7 +456,7 @@ class ParallelDecoder:
         lengths_list = [int(l.item()) for l in lengths_tensor]
 
         seq_list = [layout.input_ids[b : b + 1, : lengths_list[b]].clone() for b in range(len(samples))]
-        attn_list = [layout.attention_mask[b : b + 1, : lengths_list[b]].clone() for b in range(len(samples))]
+        time_lists = [layout.time_ids[b, : lengths_list[b]].tolist() for b in range(len(samples))]
         past_list = [self._slice_past(past, b) for b in range(len(samples))]
 
         branch_states: List[Dict[str, torch.Tensor]] = []
@@ -395,6 +466,7 @@ class ParallelDecoder:
             branch_ids_tensor = torch.tensor(meta.branch_ids, device=self.device, dtype=layout.pos2d.dtype)
             branch_lengths_tensor = torch.tensor(meta.branch_lengths, device=self.device, dtype=layout.pos2d.dtype)
             branch_start_y_tensor = torch.tensor(meta.branch_start_y, device=self.device, dtype=layout.pos2d.dtype)
+            branch_pos1d_tensor = torch.tensor(meta.branch_pos1d_end, device=self.device, dtype=layout.pos1d.dtype)
             branch_ymax_tensor = torch.where(
                 branch_lengths_tensor > 0,
                 branch_start_y_tensor + branch_lengths_tensor - 1,
@@ -404,6 +476,7 @@ class ParallelDecoder:
                 {
                     "ids": branch_ids_tensor,
                     "ymax": branch_ymax_tensor,
+                    "pos1d": branch_pos1d_tensor,
                 }
             )
             branch_tokens_per_sample.append([[] for _ in meta.branch_ids])
@@ -425,10 +498,18 @@ class ParallelDecoder:
                         continue
                     branch_order = order
 
+                pos1d_tensor = branch_states[sample_idx]["pos1d"]
+
                 for branch_idx in branch_order:
-                    last_tokens = seq_list[sample_idx][:, -1:]
+                    if int(ids_tensor[branch_idx].item()) == 0:
+                        continue
+                    last_pos = int(pos1d_tensor[branch_idx].item())
+                    if last_pos < 0:
+                        continue
+
+                    last_tokens = seq_list[sample_idx][:, last_pos : last_pos + 1]
                     pos1d_next = torch.tensor(
-                        [[lengths_list[sample_idx]]],
+                        [[last_pos + 1]],
                         device=self.device,
                         dtype=layout.pos1d.dtype,
                     )
@@ -438,12 +519,12 @@ class ParallelDecoder:
                     pos2d_next = torch.stack([branch_x, y_next], dim=-1)
                     set_rope_pos2d(self.model, pos2d_next)
 
-                    attn_next = torch.ones((1, 1), device=self.device, dtype=layout.attention_mask.dtype)
-                    attn_for_model = torch.cat([attn_list[sample_idx], attn_next], dim=1)
+                    new_time = int(y_next.item())
+                    increment_mask = build_incremental_causal_mask(time_lists[sample_idx] + [new_time], self.device)
 
                     out = self.model(
                         input_ids=last_tokens,
-                        attention_mask=attn_for_model,
+                        attention_mask=increment_mask,
                         position_ids=pos1d_next,
                         use_cache=True,
                         past_key_values=past_list[sample_idx],
@@ -458,11 +539,16 @@ class ParallelDecoder:
                         next_token = torch.argmax(logits, dim=-1, keepdim=True)
 
                     seq_list[sample_idx] = torch.cat([seq_list[sample_idx], next_token], dim=1)
-                    attn_list[sample_idx] = attn_for_model
                     past_list[sample_idx] = out.past_key_values
                     lengths_list[sample_idx] += 1
                     ymax_tensor[branch_idx] = ymax_tensor[branch_idx] + 1
                     branch_tokens_per_sample[sample_idx][branch_idx].append(next_token.detach())
+                    time_lists[sample_idx].append(new_time)
+                    pos1d_tensor[branch_idx] = torch.tensor(
+                        lengths_list[sample_idx] - 1,
+                        device=self.device,
+                        dtype=layout.pos1d.dtype,
+                    )
 
         pad_id = layout.pad_id
         max_len = max(seq.size(1) for seq in seq_list)
@@ -481,6 +567,8 @@ class ParallelDecoder:
             branches_out: List[BranchGeneration] = []
             ids_tensor = branch_states[idx]["ids"].detach().cpu()
             for branch_idx, branch_id in enumerate(ids_tensor.tolist()):
+                if branch_id == 0:
+                    continue
                 tokens_seq = branch_tokens_per_sample[idx][branch_idx]
                 if tokens_seq:
                     branch_tensor = torch.cat(tokens_seq, dim=1).squeeze(0)
@@ -515,4 +603,6 @@ __all__ = [
     "patch_model_with_interleaved_2d_rope",
     "BatchLayout",
     "GenerationResult",
+    "build_columnar_causal_mask",
+    "build_incremental_causal_mask",
 ]
