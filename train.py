@@ -87,9 +87,14 @@ class ParallelDecodingTrainer(Trainer):
             except StopIteration:
                 target_device = torch.device("cpu")
 
+        try:
+            param_dtype = next(module.parameters()).dtype
+        except StopIteration:
+            param_dtype = torch.float32
+
         set_rope_pos2d(module, pos2d_tensor.to(target_device))
         attn_mask = build_columnar_causal_mask(time_ids.to(target_device), pad_mask.to(target_device))
-        inputs["attention_mask"] = attn_mask
+        inputs["attention_mask"] = attn_mask.to(dtype=param_dtype)
         outputs = model(
             use_cache=False,
             **inputs,

@@ -419,7 +419,13 @@ class ParallelDecoder:
     def forward(self, samples: Sequence[Dict[str, Any]], pad_to: Optional[int] = None, **forward_kwargs):
         layout = self.build_layout(samples, pad_to=pad_to)
         set_rope_pos2d(self.model, layout.pos2d)
-        causal_mask = build_columnar_causal_mask(layout.time_ids.to(self.device), layout.attention_mask.to(self.device))
+        param_iter = iter(self.model.parameters())
+        first_param = next(param_iter, None)
+        param_dtype = first_param.dtype if first_param is not None else torch.float32
+        causal_mask = build_columnar_causal_mask(
+            layout.time_ids.to(self.device),
+            layout.attention_mask.to(self.device),
+        ).to(dtype=param_dtype)
         return self.model(
             input_ids=layout.input_ids,
             attention_mask=causal_mask,
@@ -443,7 +449,13 @@ class ParallelDecoder:
         layout = self.build_layout(samples, pad_to=pad_to)
 
         set_rope_pos2d(self.model, layout.pos2d)
-        causal_mask = build_columnar_causal_mask(layout.time_ids.to(self.device), layout.attention_mask.to(self.device))
+        param_iter = iter(self.model.parameters())
+        first_param = next(param_iter, None)
+        param_dtype = first_param.dtype if first_param is not None else torch.float32
+        causal_mask = build_columnar_causal_mask(
+            layout.time_ids.to(self.device),
+            layout.attention_mask.to(self.device),
+        ).to(dtype=param_dtype)
         outputs = self.model(
             input_ids=layout.input_ids,
             attention_mask=causal_mask,
@@ -520,7 +532,10 @@ class ParallelDecoder:
                     set_rope_pos2d(self.model, pos2d_next)
 
                     new_time = int(y_next.item())
-                    increment_mask = build_incremental_causal_mask(time_lists[sample_idx] + [new_time], self.device)
+                    increment_mask = build_incremental_causal_mask(
+                        time_lists[sample_idx] + [new_time],
+                        self.device,
+                    ).to(dtype=param_dtype)
 
                     out = self.model(
                         input_ids=last_tokens,
