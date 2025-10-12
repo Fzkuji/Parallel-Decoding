@@ -66,7 +66,11 @@ class FineWebColumnarDataset(IterableDataset):
                 chunk = tokens[start : start + self.seq_length]
                 if not chunk:
                     break
-                chunk_text = self.tokenizer.decode(chunk)
+                chunk_text = self.tokenizer.decode(
+                    chunk,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
                 buffer.append(chunk_text)
                 start += self.seq_length
                 if len(buffer) == self.branch_count:
@@ -96,7 +100,7 @@ class ColumnarPretrainCollator:
             self.tokenizer,
             samples,
             device=torch.device("cpu"),
-            pad_to=self.seq_length * max(1, self.branch_count),
+            pad_to=None,
         )
         labels = layout.input_ids.clone()
         labels[layout.attention_mask == 0] = -100

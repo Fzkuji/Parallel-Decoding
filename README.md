@@ -52,10 +52,11 @@ python pretrain.py \
   --dataset-name HuggingFaceFW/fineweb-edu \
   --dataset-config sample-10BT \
   --dataset-split train \
-  --branch-count 4 \
-  --seq-length 1024 \
-  --batch-size 2 \
-  --max-steps 200
+  --branch-count 16 \
+  --seq-length 256 \
+  --batch-size 1 \
+  --gradient-accumulation-steps 1 \
+  --max-steps 20480
 ```
 
 - `--branch-count` 决定每个样本并行的分支数量；`--seq-length` 为每个分支的截断长度。
