@@ -103,6 +103,7 @@ python train.py \
 - `--gradient-accumulation-steps`、`--learning-rate`、`--warmup-ratio` 等与 `TrainingArguments` 一致。
 - `--learning-rate` 默认 `4e-4`，可根据是否启用 LoRA 或 batch 大小自行调整。
 - 若显存紧张，可附加 `--use-lora` 及相关参数（`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`），只更新少量 LoRA 权重，大幅节省显存。LoRA 训练完成后输出目录包含适配器权重，需要在推理和评估时同时指定底模。
+- 如果希望保留所有 SQuAD context（不对问题数做筛选），可以传入 `--min-questions 1 --max-branches 0`，模型会逐个问题构造样本。或者设置 `--min-questions 1 --max-branches N`，每条样本保留最多 `N+1` 个问题，避免因问题数不足被过滤。
 
 训练过程中会自动把 `pos2d` 设置到模型的 2D RoPE 上，并为每个 batch 构造列同步 causal mask。如需多卡训练，可直接使用：
 

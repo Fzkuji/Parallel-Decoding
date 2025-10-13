@@ -1,4 +1,5 @@
 import argparse
+import math
 from typing import Any, Dict, List
 
 import torch
@@ -197,6 +198,24 @@ def main():
     )
 
     eval_strategy = "steps" if eval_dataset is not None else "no"
+
+    if train_dataset is not None:
+        train_examples = len(train_dataset)
+    else:
+        train_examples = 0
+
+    world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+    effective_batch = args.batch_size * world_size * args.gradient_accumulation_steps
+    updates_per_epoch = math.ceil(train_examples / effective_batch) if effective_batch > 0 else 0
+    total_update_steps = int(updates_per_epoch * math.ceil(args.epochs)) if updates_per_epoch else 0
+
+    print(
+        f"Training samples: {train_examples}; per_device_batch: {args.batch_size}; "
+        f"world_size: {world_size}; grad_accumulation: {args.gradient_accumulation_steps}"
+    )
+    print(
+        f"Estimated updates per epoch: {updates_per_epoch}; total update steps (epochs={args.epochs}): {total_update_steps}"
+    )
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
