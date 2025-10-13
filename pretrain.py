@@ -249,6 +249,8 @@ def main():
         report_to=[],
         remove_unused_columns=False,
         seed=args.seed,
+        dispatch_batches=False,
+        split_batches=True,
     )
 
     trainer = PretrainTrainer(
