@@ -419,6 +419,39 @@ class ParallelDecoder:
             return DynamicCache.from_legacy_cache(tuple(sliced_layers))
         return tuple(sliced_layers)
 
+    def _trim_past_seq(self, past_kv: Any, target_len: int) -> Any:
+        if past_kv is None or target_len is None:
+            return past_kv
+        if target_len < 0:
+            target_len = 0
+
+        def _trim_legacy(legacy_layers: Tuple[Any, ...]) -> Tuple[Any, ...]:
+            trimmed: List[Any] = []
+            for layer in legacy_layers:
+                if layer is None:
+                    trimmed.append(None)
+                    continue
+                if not (isinstance(layer, tuple) and len(layer) == 2):
+                    trimmed.append(layer)
+                    continue
+                key, value = layer
+                if key is not None and key.shape[-2] > target_len:
+                    key = key[..., :target_len, :].contiguous()
+                if value is not None and value.shape[-2] > target_len:
+                    value = value[..., :target_len, :].contiguous()
+                trimmed.append((key, value))
+            return tuple(trimmed)
+
+        if isinstance(past_kv, tuple):
+            return _trim_legacy(past_kv)
+
+        if hasattr(past_kv, "to_legacy_cache"):
+            legacy = past_kv.to_legacy_cache()
+            trimmed_legacy = _trim_legacy(legacy)
+            return DynamicCache.from_legacy_cache(trimmed_legacy)
+
+        return past_kv
+
     def build_layout(self, samples: Sequence[Dict[str, Any]], pad_to: Optional[int] = None) -> BatchLayout:
         return build_flat_linear_layout(self.tokenizer, samples, device=self.device, pad_to=pad_to)
 
@@ -476,7 +509,7 @@ class ParallelDecoder:
 
         seq_list = [layout.input_ids[b : b + 1, : lengths_list[b]].clone() for b in range(len(samples))]
         time_lists = [layout.time_ids[b, : lengths_list[b]].tolist() for b in range(len(samples))]
-        past_list = [self._slice_past(past, b) for b in range(len(samples))]
+        past_list = [self._trim_past_seq(self._slice_past(past, b), lengths_list[b]) for b in range(len(samples))]
 
         def _kv_seq_len(cache: Any) -> Optional[int]:
             if cache is None:
@@ -523,13 +556,21 @@ class ParallelDecoder:
             branch_lengths_tensor = torch.tensor(meta.branch_lengths, device=self.device, dtype=layout.pos2d.dtype)
             branch_start_y_tensor = torch.tensor(meta.branch_start_y, device=self.device, dtype=layout.pos2d.dtype)
             branch_pos1d_tensor = torch.tensor(meta.branch_pos1d_end, device=self.device, dtype=layout.pos1d.dtype)
-            if lengths_list[sample_idx] > 0:
-                branch_pos1d_tensor = torch.clamp(branch_pos1d_tensor, max=lengths_list[sample_idx] - 1)
+            last_valid_index = lengths_list[sample_idx] - 1 if lengths_list[sample_idx] > 0 else -1
+            if last_valid_index >= 0:
+                branch_pos1d_tensor = torch.clamp(branch_pos1d_tensor, max=last_valid_index)
             branch_ymax_tensor = torch.where(
                 branch_lengths_tensor > 0,
                 branch_start_y_tensor + branch_lengths_tensor - 1,
                 branch_start_y_tensor - 1,
             )
+            if time_lists[sample_idx]:
+                max_time = max(time_lists[sample_idx])
+                if max_time >= 0:
+                    max_time_tensor = torch.full_like(branch_ymax_tensor, max_time)
+                    branch_ymax_tensor = torch.minimum(branch_ymax_tensor, max_time_tensor)
+                    updated_lengths = branch_ymax_tensor - branch_start_y_tensor + 1
+                    branch_lengths_tensor = torch.clamp(updated_lengths, min=0)
             branch_states.append(
                 {
                     "ids": branch_ids_tensor,
