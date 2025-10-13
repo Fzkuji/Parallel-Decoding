@@ -53,13 +53,14 @@ python pretrain.py \
   --dataset-config sample-10BT \
   --dataset-split train \
   --branch-count 16 \
+  --main-segments 2 \
   --seq-length 256 \
   --batch-size 1 \
   --gradient-accumulation-steps 1 \
   --max-steps 20480
 ```
 
-- `--branch-count` 决定每个样本并行的分支数量；`--seq-length` 为每个分支的截断长度。
+- `--branch-count` 决定将一段文本切成多少个等长片段；`--main-segments` 指定前多少个片段拼接成主干，其余片段作为分支，默认 1。比如 `--branch-count 8 --main-segments 2 --seq-length 256` 会从同一段长文本中切出 8×256 个 token：前 512 token 组成主干，剩余 6 个分支被对齐到主干的后 256 列，实现「共享背景 + 并行后续」。
 - 默认使用本地（非 streaming）加载。如需避免一次性下载，可附加 `--streaming` 切换到 HF streaming 接口。
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。

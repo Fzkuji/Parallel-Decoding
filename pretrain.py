@@ -33,10 +33,11 @@ class FineWebColumnarDataset(IterableDataset):
         max_samples: Optional[int] = None,
         local_files_only: bool = False,
         streaming: bool = False,
+        main_segments: int = 1,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
-        self.branch_count = branch_count
+        self.total_segments = max(1, branch_count)
         self.seq_length = seq_length
         self.split = split
         self.dataset_name = dataset_name
@@ -44,6 +45,36 @@ class FineWebColumnarDataset(IterableDataset):
         self.max_samples = max_samples
         self.local_files_only = local_files_only
         self.streaming = streaming
+        self.main_segments = max(1, min(main_segments, self.total_segments))
+
+    def _decode_tokens(self, token_ids: List[int]) -> str:
+        return self.tokenizer.decode(
+            token_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+
+    def _build_sample(self, chunk: List[int]) -> Dict[str, List[str]]:
+        segments: List[List[int]] = []
+        for idx in range(self.total_segments):
+            start = idx * self.seq_length
+            end = start + self.seq_length
+            segment = chunk[start:end]
+            if len(segment) < self.seq_length:
+                pad_id = self.tokenizer.pad_token_id or 0
+                segment = segment + [pad_id] * (self.seq_length - len(segment))
+            segments.append(segment)
+
+        main_tokens: List[int] = []
+        for idx in range(self.main_segments):
+            main_tokens.extend(segments[idx])
+        main_text = self._decode_tokens(main_tokens)
+
+        branch_texts: List[str] = []
+        for segment in segments[self.main_segments :]:
+            branch_texts.append(self._decode_tokens(segment))
+
+        return {"main": main_text, "branches": branch_texts}
 
     def __iter__(self):
         download_config = DownloadConfig(local_files_only=True) if self.local_files_only else None
@@ -62,7 +93,8 @@ class FineWebColumnarDataset(IterableDataset):
                 streaming=self.streaming,
                 download_config=download_config,
             )
-        buffer: List[str] = []
+
+        chunk_size = self.seq_length * self.total_segments
         produced = 0
         for row in dataset:
             text = row.get("text", "")
@@ -73,39 +105,31 @@ class FineWebColumnarDataset(IterableDataset):
             if not tokens:
                 continue
             start = 0
-            while start < len(tokens):
-                chunk = tokens[start : start + self.seq_length]
-                if not chunk:
-                    break
-                chunk_text = self.tokenizer.decode(
-                    chunk,
-                    skip_special_tokens=False,
-                    clean_up_tokenization_spaces=False,
-                )
-                buffer.append(chunk_text)
-                start += self.seq_length
-                if len(buffer) == self.branch_count:
-                    yield {"main": "", "branches": buffer}
-                    buffer = []
-                    produced += 1
-                    if self.max_samples is not None and produced >= self.max_samples:
-                        return
-        # drop remaining buffer
+            while start + chunk_size <= len(tokens):
+                chunk_tokens = tokens[start : start + chunk_size]
+                sample = self._build_sample(chunk_tokens)
+                yield sample
+                produced += 1
+                if self.max_samples is not None and produced >= self.max_samples:
+                    return
+                start += chunk_size
 
 
 class ColumnarPretrainCollator:
-    def __init__(self, tokenizer, seq_length: int, branch_count: int) -> None:
+    def __init__(self, tokenizer, seq_length: int, branch_count: int, main_segments: int) -> None:
         self.tokenizer = tokenizer
         self.seq_length = seq_length
-        self.branch_count = branch_count
-        self.total_length = seq_length * max(1, branch_count)
+        self.total_segments = max(1, branch_count)
+        self.main_segments = max(1, min(main_segments, self.total_segments))
+        self.expected_branches = max(0, self.total_segments - self.main_segments)
+        self.total_length = seq_length * self.total_segments
 
     def __call__(self, features: List[Dict[str, List[str]]]) -> Dict[str, torch.Tensor]:
         samples = []
         for feat in features:
             branches = feat.get("branches", [])
-            if len(branches) < self.branch_count:
-                branches = branches + [""] * (self.branch_count - len(branches))
+            if len(branches) < self.expected_branches:
+                branches = branches + [""] * (self.expected_branches - len(branches))
             samples.append({"main": feat.get("main", ""), "branches": branches})
 
         layout = build_flat_linear_layout(
@@ -186,6 +210,7 @@ def parse_args():
         nargs="*",
         default=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
+    parser.add_argument("--main-segments", type=int, default=1, help="Number of segments assigned to the main branch")
     return parser.parse_args()
 
 
@@ -229,12 +254,14 @@ def main():
         max_samples=args.max_samples,
         local_files_only=args.local_files_only,
         streaming=args.streaming,
+        main_segments=args.main_segments,
     )
 
     collator = ColumnarPretrainCollator(
         tokenizer=tokenizer,
         seq_length=args.seq_length,
         branch_count=args.branch_count,
+        main_segments=args.main_segments,
     )
 
     training_args = TrainingArguments(

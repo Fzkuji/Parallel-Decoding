@@ -262,12 +262,10 @@ def build_flat_linear_layout(
 
         entries: List[Tuple[int, int, int, int]] = []
         branch_start_y: List[int] = []
-        branch_lengths_raw: List[int] = []
         branch_pos1d_end = [-1 for _ in branch_sequences]
 
         for idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
             seq_len = tokens.numel()
-            branch_lengths_raw.append(seq_len)
             if seq_len == 0:
                 start_col = 0 if idx == 0 else (main_len if main_len > 0 else 0)
                 branch_start_y.append(start_col)
@@ -277,7 +275,10 @@ def build_flat_linear_layout(
                 times = torch.arange(seq_len, device=device)
             else:
                 if non_main_count > 0:
-                    base = main_len if main_len > 0 else 0
+                    if main_len > 0:
+                        base = max(main_len - max_branch_len, 0)
+                    else:
+                        base = 0
                     start_col = base + (max_branch_len - seq_len)
                 else:
                     start_col = 0 if main_len == 0 else main_len
