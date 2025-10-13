@@ -65,6 +65,7 @@ python pretrain.py \
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
 - `--learning-rate` 默认 `4e-4`，可根据 batch 大小或是否启用 LoRA 调整。
+- 若显存有限，可加 `--use-lora` 与 `--lora-*` 参数，仅训练 LoRA 适配器，实现低开销预训练。
 
 ## 阶段二：SQuAD 任务微调
 `train.py` 会把 SQuAD 中相同 `context` 的问答聚合成单条样本，主干保存背景，后续问题作为分支。推荐在预训练权重基础上继续训练：

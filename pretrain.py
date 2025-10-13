@@ -6,8 +6,19 @@ from torch.utils.data import IterableDataset
 from datasets import DownloadConfig, load_dataset
 from transformers import TrainingArguments
 
-from model import ParallelDecoder, build_flat_linear_layout, set_rope_pos2d, build_columnar_causal_mask
+from model import (
+    ParallelDecoder,
+    build_flat_linear_layout,
+    set_rope_pos2d,
+    build_columnar_causal_mask,
+)
 from train import ParallelDecodingTrainer
+
+try:
+    from peft import LoraConfig, get_peft_model
+except ImportError:  # pragma: no cover - optional dependency
+    LoraConfig = None  # type: ignore
+    get_peft_model = None  # type: ignore
 
 
 class FineWebColumnarDataset(IterableDataset):
@@ -156,7 +167,7 @@ def parse_args():
     parser.add_argument("--branch-count", type=int, default=4)
     parser.add_argument("--seq-length", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--learning-rate", type=float, default=4e-4)
     parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
@@ -164,6 +175,16 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--streaming", action="store_true", help="Use HuggingFace streaming dataset interface")
+    parser.add_argument("--use-lora", action="store_true", help="Enable LoRA adapters for pretraining")
+    parser.add_argument("--lora-r", type=int, default=16)
+    parser.add_argument("--lora-alpha", type=float, default=32.0)
+    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument(
+        "--lora-target-modules",
+        type=str,
+        nargs="*",
+        default=["q_proj", "k_proj", "v_proj", "o_proj"],
+    )
     return parser.parse_args()
 
 
@@ -182,6 +203,20 @@ def main():
     decoder = ParallelDecoder(model_name=args.model_name)
     model = decoder.model
     tokenizer = decoder.tokenizer
+
+    if args.use_lora:
+        if LoraConfig is None or get_peft_model is None:
+            raise RuntimeError("peft 未安装，无法启用 LoRA。请先 pip install peft")
+        lora_cfg = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=args.lora_target_modules,
+        )
+        model = get_peft_model(model, lora_cfg)
+        decoder.model = model
 
     dataset = FineWebColumnarDataset(
         tokenizer=tokenizer,
