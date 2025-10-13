@@ -207,6 +207,7 @@ def main():
         seed=args.seed,
         remove_unused_columns=False,
         report_to=[],
+        ddp_find_unused_parameters=False,
     )
 
     trainer = ParallelDecodingTrainer(

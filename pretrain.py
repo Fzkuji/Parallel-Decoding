@@ -250,6 +250,7 @@ def main():
         report_to=[],
         remove_unused_columns=False,
         seed=args.seed,
+        ddp_find_unused_parameters=False,
     )
 
     trainer = PretrainTrainer(
