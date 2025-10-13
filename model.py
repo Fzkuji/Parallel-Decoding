@@ -276,10 +276,9 @@ def build_flat_linear_layout(
             else:
                 if non_main_count > 0:
                     if main_len > 0:
-                        base = max(main_len - max_branch_len, 0)
+                        start_col = main_len + max(max_branch_len - seq_len, 0)
                     else:
-                        base = 0
-                    start_col = base + (max_branch_len - seq_len)
+                        start_col = max(max_branch_len - seq_len, 0)
                 else:
                     start_col = 0 if main_len == 0 else main_len
                 times = torch.arange(seq_len, device=device) + start_col
