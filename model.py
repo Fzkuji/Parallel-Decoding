@@ -575,6 +575,8 @@ class ParallelDecoder:
 
         branch_states: List[Dict[str, torch.Tensor]] = []
         branch_tokens_per_sample: List[List[List[torch.Tensor]]] = []
+        branch_active_flags: List[List[bool]] = []
+        eos_id = self.tokenizer.eos_token_id
 
         for sample_idx, meta in enumerate(layout.metadata):
             branch_ids_tensor = torch.tensor(meta.branch_ids, device=self.device, dtype=layout.pos2d.dtype)
@@ -605,6 +607,13 @@ class ParallelDecoder:
                 }
             )
             branch_tokens_per_sample.append([[] for _ in meta.branch_ids])
+            flags: List[bool] = []
+            for branch_id in meta.branch_ids:
+                if meta.background_branch_id >= 0 and branch_id == meta.background_branch_id:
+                    flags.append(False)
+                else:
+                    flags.append(True)
+            branch_active_flags.append(flags)
 
         for _ in range(max_new_tokens):
             for sample_idx in range(len(samples)):
@@ -626,8 +635,17 @@ class ParallelDecoder:
                 pos1d_tensor = branch_states[sample_idx]["pos1d"]
 
                 background_id = int(branch_states[sample_idx]["background"].item())
+                active_any = False
+                for branch_idx in branch_order:
+                    if branch_active_flags[sample_idx][branch_idx]:
+                        active_any = True
+                        break
+                if not active_any:
+                    continue
 
                 for branch_idx in branch_order:
+                    if not branch_active_flags[sample_idx][branch_idx]:
+                        continue
                     current_branch = int(ids_tensor[branch_idx].item())
                     if background_id >= 0 and current_branch == background_id:
                         continue
@@ -680,6 +698,8 @@ class ParallelDecoder:
                         device=self.device,
                         dtype=layout.pos1d.dtype,
                     )
+                    if eos_id is not None and int(next_token.item()) == eos_id:
+                        branch_active_flags[sample_idx][branch_idx] = False
 
         pad_id = layout.pad_id
         max_len = max(seq.size(1) for seq in seq_list)
