@@ -27,7 +27,10 @@ def _normalize_answer(text: str) -> str:
 
 
 def _first_line(text: str) -> str:
-    line = text.splitlines()[0]
+    lines = text.splitlines()
+    if not lines:
+        return text.strip()
+    line = lines[0]
     if ":" in line:
         # drop leading labels like "答案:" or "answer:"
         parts = line.split(":", 1)
