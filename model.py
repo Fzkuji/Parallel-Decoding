@@ -478,14 +478,43 @@ class ParallelDecoder:
         time_lists = [layout.time_ids[b, : lengths_list[b]].tolist() for b in range(len(samples))]
         past_list = [self._slice_past(past, b) for b in range(len(samples))]
 
+        def _kv_seq_len(cache: Any) -> Optional[int]:
+            if cache is None:
+                return None
+            if hasattr(cache, "get_seq_length"):
+                try:
+                    return int(cache.get_seq_length())
+                except Exception:
+                    pass
+            iterator = cache if isinstance(cache, tuple) else None
+            if iterator is None:
+                return None
+            for layer in iterator:
+                if layer is None:
+                    continue
+                if isinstance(layer, tuple) and layer and layer[0] is not None:
+                    return layer[0].shape[-2]
+            return None
+
+        for idx in range(len(samples)):
+            kv_len = _kv_seq_len(past_list[idx])
+            if kv_len is None:
+                continue
+            if kv_len < lengths_list[idx]:
+                seq_list[idx] = seq_list[idx][:, :kv_len]
+                time_lists[idx] = time_lists[idx][:kv_len]
+                lengths_list[idx] = kv_len
+
         branch_states: List[Dict[str, torch.Tensor]] = []
         branch_tokens_per_sample: List[List[List[torch.Tensor]]] = []
 
-        for meta in layout.metadata:
+        for sample_idx, meta in enumerate(layout.metadata):
             branch_ids_tensor = torch.tensor(meta.branch_ids, device=self.device, dtype=layout.pos2d.dtype)
             branch_lengths_tensor = torch.tensor(meta.branch_lengths, device=self.device, dtype=layout.pos2d.dtype)
             branch_start_y_tensor = torch.tensor(meta.branch_start_y, device=self.device, dtype=layout.pos2d.dtype)
             branch_pos1d_tensor = torch.tensor(meta.branch_pos1d_end, device=self.device, dtype=layout.pos1d.dtype)
+            if lengths_list[sample_idx] > 0:
+                branch_pos1d_tensor = torch.clamp(branch_pos1d_tensor, max=lengths_list[sample_idx] - 1)
             branch_ymax_tensor = torch.where(
                 branch_lengths_tensor > 0,
                 branch_start_y_tensor + branch_lengths_tensor - 1,
