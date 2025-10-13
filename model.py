@@ -1,4 +1,5 @@
 import math
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -61,25 +62,17 @@ class Interleaved2DRoPE(torch.nn.Module):
 
 
 def patch_model_with_interleaved_2d_rope(model: torch.nn.Module, pair_indices_1based: Sequence[int]) -> Interleaved2DRoPE:
-    if hasattr(model, "model") and hasattr(model.model, "language_model"):
-        base_rope = model.model.language_model.rotary_emb
-        new_rope = Interleaved2DRoPE(base_rope, pair_indices_1based)
-        model.model.language_model.rotary_emb = new_rope
-        return new_rope
-    if hasattr(model, "model") and hasattr(model.model, "rotary_emb"):
-        base_rope = model.model.rotary_emb
-        new_rope = Interleaved2DRoPE(base_rope, pair_indices_1based)
-        model.model.rotary_emb = new_rope
-        return new_rope
-    raise RuntimeError("未找到文本侧 rotary_emb，确认模型结构是否兼容")
+    holder = _find_rotary_holder(model)
+    base_rope = holder.rotary_emb
+    new_rope = Interleaved2DRoPE(base_rope, pair_indices_1based)
+    holder.rotary_emb = new_rope
+    return new_rope
 
 
 def set_rope_pos2d(model: torch.nn.Module, pos2d: torch.Tensor) -> None:
     device = next(model.parameters()).device
-    if hasattr(model, "model") and hasattr(model.model, "language_model"):
-        rope = model.model.language_model.rotary_emb
-    else:
-        rope = model.model.rotary_emb
+    holder = _find_rotary_holder(model)
+    rope = holder.rotary_emb
     if not isinstance(rope, Interleaved2DRoPE):
         raise RuntimeError("模型未打补丁，请先调用 patch_model_with_interleaved_2d_rope")
     rope.extra_pos2d = pos2d.to(device)
@@ -738,3 +731,43 @@ __all__ = [
     "build_columnar_causal_mask",
     "build_incremental_causal_mask",
 ]
+def _find_rotary_holder(module: torch.nn.Module) -> torch.nn.Module:
+    """Locate the submodule that actually exposes `rotary_emb`."""
+
+    queue: deque[torch.nn.Module] = deque([module])
+    visited: set[int] = set()
+
+    candidate_attrs = (
+        "language_model",
+        "model",
+        "base_model",
+        "module",
+        "wrapped_model",
+        "encoder",
+    )
+
+    while queue:
+        current = queue.popleft()
+        ident = id(current)
+        if ident in visited:
+            continue
+        visited.add(ident)
+
+        if hasattr(current, "rotary_emb"):
+            return current
+
+        for attr in candidate_attrs:
+            child = getattr(current, attr, None)
+            if isinstance(child, torch.nn.Module):
+                queue.append(child)
+
+        get_base = getattr(current, "get_base_model", None)
+        if callable(get_base):
+            try:
+                base = get_base()
+            except Exception:  # pragma: no cover - defensive
+                base = None
+            if isinstance(base, torch.nn.Module):
+                queue.append(base)
+
+    raise RuntimeError("未在模型中找到 rotary_emb 模块，无法注入 2D RoPE")
