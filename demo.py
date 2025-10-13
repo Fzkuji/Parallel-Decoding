@@ -74,6 +74,7 @@ def _map_branch_prompt(sample: Dict[str, List[str]], branch_id: int) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parallel decoding demo with custom branches")
     parser.add_argument("--model-name", type=str, default=_default_model_path(), help="Model checkpoint or HF Hub id")
+    parser.add_argument("--base-model", type=str, help="Base model when --model-name 指向 LoRA adapter")
     parser.add_argument("--tokenizer-name", type=str, help="Tokenizer path/identifier (defaults to model)")
     parser.add_argument("--device", type=str, help="Device override, e.g. cuda or cpu")
     parser.add_argument("--pair-indices", type=int, nargs="*", default=[8, 16, 24], help="1-based frequency indices for 2D RoPE patch")
@@ -132,6 +133,7 @@ def main() -> None:
         device=args.device,
         tokenizer_kwargs=tokenizer_kwargs,
         model_kwargs=model_kwargs,
+        adapter_base_model=args.base_model,
     )
 
     result = decoder.generate(

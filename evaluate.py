@@ -174,6 +174,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-model", type=str, default="Qwen/Qwen3-4B", help="Base Hugging Face model identifier")
     parser.add_argument("--base-tokenizer", type=str, help="Tokenizer to pair with the base model")
     parser.add_argument("--ft-model", type=str, help="Fine-tuned model path or identifier")
+    parser.add_argument("--ft-base-model", type=str, help="Base model to pair with LoRA adapters when evaluating fine-tuned model")
     parser.add_argument("--ft-tokenizer", type=str, help="Tokenizer to pair with the fine-tuned model")
     parser.add_argument("--max-branches", type=int, default=3, help="Number of additional questions beyond the main branch")
     parser.add_argument("--min-questions", type=int, default=2, help="Minimum questions per context to keep")
@@ -237,6 +238,7 @@ def main() -> None:
             device=str(device),
             tokenizer_kwargs=tokenizer_kwargs,
             model_kwargs=model_kwargs,
+            adapter_base_model=args.ft_base_model,
         )
         parallel_accuracy, total_questions = evaluate_parallel(
             decoder,

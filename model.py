@@ -1,10 +1,16 @@
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.cache_utils import DynamicCache
+
+try:  # optional dependency for LoRA adapters
+    from peft import PeftModel  # type: ignore
+except ImportError:  # pragma: no cover - peft not installed
+    PeftModel = None  # type: ignore
 
 
 def pick_device_and_dtype() -> Tuple[str, torch.dtype]:
@@ -363,6 +369,7 @@ class ParallelDecoder:
         trust_remote_code: bool = True,
         tokenizer_kwargs: Optional[Dict[str, Any]] = None,
         model_kwargs: Optional[Dict[str, Any]] = None,
+        adapter_base_model: Optional[str] = None,
     ) -> None:
         if device is None or torch_dtype is None:
             picked_device, picked_dtype = pick_device_and_dtype()
@@ -371,23 +378,41 @@ class ParallelDecoder:
         self.device = torch.device(device)
         self.dtype = torch_dtype
         self.model_name = model_name
+        self.adapter_base_model = adapter_base_model
 
         tokenizer_kwargs = tokenizer_kwargs or {}
         model_kwargs = model_kwargs or {}
 
+        adapter_path: Optional[Path] = None
+        tokenizer_source = model_name
+        load_model_name = model_name
+        candidate_path = Path(model_name)
+        if candidate_path.is_dir() and (candidate_path / "adapter_config.json").exists():
+            adapter_path = candidate_path
+            if adapter_base_model is None:
+                raise RuntimeError("检测到 LoRA adapter，但未提供 adapter_base_model")
+            load_model_name = adapter_base_model
+            tokenizer_source = adapter_base_model
+
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(
-            model_name,
+            tokenizer_source,
             trust_remote_code=trust_remote_code,
             **tokenizer_kwargs,
         )
 
         if model is None:
             model = AutoModelForCausalLM.from_pretrained(
-                model_name,
+                load_model_name,
                 torch_dtype=self.dtype,
                 trust_remote_code=trust_remote_code,
                 **model_kwargs,
             )
+            if adapter_path is not None:
+                if PeftModel is None:
+                    raise RuntimeError("peft 未安装，无法加载 LoRA adapter")
+                model = PeftModel.from_pretrained(model, str(adapter_path))
+                if hasattr(model, "merge_and_unload"):
+                    model = model.merge_and_unload()
         self.model = model.to(self.device)
         self.model.eval()
         patch_model_with_interleaved_2d_rope(self.model, pair_indices_1based)

@@ -64,6 +64,7 @@ python pretrain.py \
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
+- `--learning-rate` 默认 `2e-5`，可根据 batch 大小或是否启用 LoRA 调整。
 
 ## 阶段二：SQuAD 任务微调
 `train.py` 会把 SQuAD 中相同 `context` 的问答聚合成单条样本，主干保存背景，后续问题作为分支。推荐在预训练权重基础上继续训练：
@@ -84,6 +85,8 @@ python train.py \
 - `--max-branches`：额外保留的问题数量，实际分支数 = `max_branches + 1`（包含主干）。样本问题不足时不会补空分支，超过上限则截断。
 - `--min-questions`：过滤掉问题数不足的 context。
 - `--gradient-accumulation-steps`、`--learning-rate`、`--warmup-ratio` 等与 `TrainingArguments` 一致。
+- `--learning-rate` 默认 `2e-5`，可根据是否启用 LoRA 或 batch 大小自行调整。
+- 若显存紧张，可附加 `--use-lora` 及相关参数（`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`），只更新少量 LoRA 权重，大幅节省显存。LoRA 训练完成后输出目录包含适配器权重，需要在推理和评估时同时指定底模。
 
 训练过程中会自动把 `pos2d` 设置到模型的 2D RoPE 上，并为每个 batch 构造列同步 causal mask。如需多卡训练，可直接使用：
 
@@ -106,6 +109,16 @@ python evaluate.py \
 - **Baseline**：按传统方式逐个问题生成答案。
 - **Parallel**：将同一背景的多个问题一次性并行生成，并对每个分支计算 Exact Match。
 
+如果 `--ft-model` 指向 LoRA 适配器目录，请同时传入 `--ft-base-model` 指向底模：
+
+```bash
+python evaluate.py \
+  --base-model Qwen/Qwen3-4B \
+  --ft-model ./parallel-decoder-squad-lora \
+  --ft-base-model Qwen/Qwen3-4B \
+  --max-branches 3
+```
+
 脚本会输出两组准确率，帮助评估预训练 + 微调后的收益。若需要离线评测，可同时传入 `--local-files-only`，确保仅使用本地缓存。
 
 如果想快速用最原始的 demo 脚本体验分支推理，可直接运行：
@@ -114,10 +127,14 @@ python evaluate.py \
 python demo.py --model-name ./parallel-decoder-squad
 ```
 
-脚本会加载指定模型（默认自动检测本地微调目录），构造示例分支样本并打印线性化文本及每个分支新增的 token，便于快速验证推理流程是否正常。可通过 `--background` 与 `--questions` 自定义输入。
+脚本会加载指定模型（默认自动检测本地微调目录），构造示例分支样本并打印线性化文本及每个分支新增的 token，便于快速验证推理流程是否正常。可通过 `--background` 与 `--questions` 自定义输入。若使用 LoRA 适配器，需额外提供 `--base-model` 指向底模，例如：
+
+```bash
+python demo.py --model-name ./parallel-decoder-squad-lora --base-model Qwen/Qwen3-4B
+```
 
 ## 其他工具
-- `demo.py`：快速演示脚本，展示列式布局与分支生成的基本流程，可加载任意微调权重。
+- `demo.py`：快速演示脚本，展示列式布局与分支生成的基本流程，可加载任意微调或 LoRA 权重（需配合 `--base-model`）。
 - `model.py`：核心实现，涵盖 `Interleaved2DRoPE`、列同步布局构建、分支生成器等组件。
 - `data_utils.py`：SQuAD 聚合与过滤逻辑。
 

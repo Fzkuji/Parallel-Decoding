@@ -4,6 +4,12 @@ from typing import Any, Dict, List
 import torch
 from transformers import Trainer, TrainingArguments
 
+try:
+    from peft import LoraConfig, get_peft_model
+except ImportError:  # pragma: no cover - optional dependency
+    LoraConfig = None  # type: ignore
+    get_peft_model = None  # type: ignore
+
 from model import (
     ParallelDecoder,
     build_flat_linear_layout,
@@ -121,6 +127,17 @@ def parse_args():
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument("--use-lora", action="store_true", help="Enable LoRA adapters for parameter-efficient fine-tuning")
+    parser.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
+    parser.add_argument("--lora-alpha", type=float, default=32.0, help="LoRA scaling factor")
+    parser.add_argument("--lora-dropout", type=float, default=0.05, help="LoRA dropout probability")
+    parser.add_argument(
+        "--lora-target-modules",
+        type=str,
+        nargs="*",
+        default=["q_proj", "k_proj", "v_proj", "o_proj"],
+        help="Module names to inject LoRA adapters into",
+    )
     return parser.parse_args()
 
 def main():
@@ -132,6 +149,24 @@ def main():
     )
     model = decoder.model
     tokenizer = decoder.tokenizer
+
+    if args.use_lora:
+        if LoraConfig is None or get_peft_model is None:
+            raise RuntimeError("peft 未安装，无法启用 LoRA。请先 pip install peft")
+        lora_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=args.lora_target_modules,
+        )
+        model = get_peft_model(model, lora_config)
+        decoder.model = model
+        try:
+            model.print_trainable_parameters()  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
 
     max_questions = max(1, args.max_branches + 1)
     dataset = load_grouped_squad(
