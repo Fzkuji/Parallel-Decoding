@@ -115,7 +115,6 @@ torchrun --nproc_per_node 8 train.py --model-name ./pretrained-columnar
 
 ```bash
 python evaluate.py \
-  --base-model Qwen/Qwen3-4B \
   --ft-model ./parallel-decoder-squad \
   --max-branches 3 \
   --max-eval-samples 64 \
@@ -124,6 +123,8 @@ python evaluate.py \
 
 - **Baseline**：按传统方式逐个问题生成答案。
 - **Parallel**：将同一背景的多个问题一次性并行生成，并对每个分支计算 Exact Match。
+
+默认只评估并行模型；若想同时比较基线，可额外指定 `--base-model Qwen/Qwen3-4B`（baseline 会按题目逐条生成，共 256 次迭代）。
 
 如果 `--ft-model` 指向 LoRA 适配器目录，请同时传入 `--ft-base-model` 指向底模：
 

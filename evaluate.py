@@ -58,6 +58,15 @@ def _iter_dataset(dataset) -> Iterable[Dict[str, List[Dict[str, Sequence[str]]]]
     return dataset
 
 
+def _flatten_questions(dataset, max_questions: int) -> List[Tuple[str, str, Sequence[str]]]:
+    tasks: List[Tuple[str, str, Sequence[str]]] = []
+    for entry in _iter_dataset(dataset):
+        context = entry.get("context", "")
+        for qa in entry.get("qas", [])[:max_questions]:
+            tasks.append((context, qa.get("question", ""), qa.get("answers", [""])))
+    return tasks
+
+
 def evaluate_baseline(
     model_name_or_path: str,
     tokenizer_name_or_path: Optional[str],
@@ -82,28 +91,25 @@ def evaluate_baseline(
     total = 0
     correct = 0
 
-    iterable = list(_iter_dataset(dataset))
-    iterator = tqdm(iterable, desc="Baseline", unit="context") if tqdm else iterable
+    tasks = _flatten_questions(dataset, max_questions)
+    iterator = tqdm(tasks, desc="Baseline", unit="question") if tqdm else tasks
 
-    for entry in iterator:
-        context = entry["context"]
-        for qa in entry["qas"][:max_questions]:
-            question = qa.get("question", "")
-            prompt = f"背景: {context}\n问题: {question}\n答案:"
-            inputs = tokenizer(prompt, return_tensors="pt").to(device)
-            with torch.no_grad():
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    use_cache=True,
-                )
-            generated_tokens = output[0, inputs["input_ids"].shape[1] :]
-            prediction = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            prediction = _first_line(prediction)
-            if _exact_match(prediction, qa.get("answers", [""])):
-                correct += 1
-            total += 1
+    for context, question, answers in iterator:
+        prompt = f"背景: {context}\n问题: {question}\n答案:"
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+            )
+        generated_tokens = output[0, inputs["input_ids"].shape[1] :]
+        prediction = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        prediction = _first_line(prediction)
+        if _exact_match(prediction, answers):
+            correct += 1
+        total += 1
 
     return (correct / total if total else 0.0, total)
 
@@ -199,7 +205,7 @@ def evaluate_parallel(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate baseline and parallel decoders on SQuAD")
-    parser.add_argument("--base-model", type=str, default="Qwen/Qwen3-4B", help="Base Hugging Face model identifier")
+    parser.add_argument("--base-model", type=str, help="Base Hugging Face model identifier")
     parser.add_argument("--base-tokenizer", type=str, help="Tokenizer to pair with the base model")
     parser.add_argument("--ft-model", type=str, help="Fine-tuned model path or identifier")
     parser.add_argument("--ft-base-model", type=str, help="Base model to pair with LoRA adapters when evaluating fine-tuned model")
@@ -208,7 +214,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-questions", type=int, default=2, help="Minimum questions per context to keep")
     parser.add_argument("--max-eval-samples", type=int, help="Cap on the number of grouped contexts for evaluation")
     parser.add_argument("--max-new-tokens", type=int, default=32, help="Generation length for each answer")
-    parser.add_argument("--batch-size", type=int, default=2, help="Batch size for parallel decoder evaluation")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for parallel decoder evaluation")
     parser.add_argument("--device", type=str, help="Device override, e.g., cuda or cpu")
     parser.add_argument("--local-files-only", action="store_true", help="Force using local cached datasets and models")
     parser.add_argument("--pair-indices", type=int, nargs="*", default=[8, 16, 24], help="1-based frequency indices for 2D RoPE interleave")
