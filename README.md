@@ -45,7 +45,7 @@ Parallel-Decoding 是一个实验性项目，用于探索如何在大语言模�
 建议提前缓存好 Qwen/Qwen3-4B 模型与分词器，或保证可访问 Hugging Face Hub。若网络受限，脚本会 fallback 到官方 JSON 构建数据集，但模型与分词器仍需本地存在。
 
 ## 阶段一：FineWeb 列式预训练
-`pretrain.py` 会从 FineWeb 采样多段文本，将每段视为一个分支，构造列同步的注意力掩码后执行自回归训练。
+`pretrain.py` 会先从 FineWeb 读入一段长文本，再按 `branch_count × seq_length` 切成等长片段：前 `main_segments` 个片段拼成主干，其余片段作为并行分支（全部来自同一上下文），最后构造列同步的注意力掩码做自回归训练。
 
 ```bash
 python pretrain.py \
@@ -60,13 +60,27 @@ python pretrain.py \
   --max-steps 20480
 ```
 
-- `--branch-count` 决定将一段文本切成多少个等长片段；`--main-segments` 指定前多少个片段拼接成主干，其余片段作为分支，默认 1。比如 `--branch-count 8 --main-segments 2 --seq-length 256` 会从同一段长文本中切出 8×256 个 token：前 512 token 组成主干，剩余 6 个分支被对齐到主干的后 256 列，实现「共享背景 + 并行后续」。
+- `--branch-count` 决定将一段文本切成多少个等长片段；`--main-segments` 指定前多少个片段拼接成主干，其余片段作为分支，默认 2。比如 `--branch-count 8 --main-segments 2 --seq-length 256` 会从同一段长文本中切出 8×256 个 token：前 512 token 组成主干，剩余 6 个分支都从列 256 开始接续，实现「共享背景 + 并行续写」。
 - 默认使用本地（非 streaming）加载。如需避免一次性下载，可附加 `--streaming` 切换到 HF streaming 接口。
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
 - `--learning-rate` 默认 `4e-4`，可根据 batch 大小或是否启用 LoRA 调整。
 - 若显存有限，可加 `--use-lora` 与 `--lora-*` 参数，仅训练 LoRA 适配器，实现低开销预训练。
+- 多卡运行示例：
+
+  ```bash
+  torchrun --nproc_per_node 8 pretrain.py \
+    --dataset-name HuggingFaceFW/fineweb-edu \
+    --dataset-config sample-10BT \
+    --dataset-split train \
+    --branch-count 8 \
+    --main-segments 2 \
+    --seq-length 256 \
+    --batch-size 4 \
+    --gradient-accumulation-steps 4 \
+    --max-steps 10240
+  ```
 
 ## 阶段二：SQuAD 任务微调
 `train.py` 会把 SQuAD 中相同 `context` 的问答聚合成单条样本，主干保存背景，后续问题作为分支。推荐在预训练权重基础上继续训练：

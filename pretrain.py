@@ -210,7 +210,7 @@ def parse_args():
         nargs="*",
         default=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
-    parser.add_argument("--main-segments", type=int, default=1, help="Number of segments assigned to the main branch")
+    parser.add_argument("--main-segments", type=int, default=2, help="Number of segments assigned to the main branch")
     return parser.parse_args()
 
 
