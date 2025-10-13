@@ -108,8 +108,16 @@ python evaluate.py \
 
 脚本会输出两组准确率，帮助评估预训练 + 微调后的收益。若需要离线评测，可同时传入 `--local-files-only`，确保仅使用本地缓存。
 
+如果想快速用最原始的 demo 脚本体验分支推理，可直接运行：
+
+```bash
+python demo.py --model-name ./parallel-decoder-squad
+```
+
+脚本会加载指定模型（默认自动检测本地微调目录），构造示例分支样本并打印线性化文本及每个分支新增的 token，便于快速验证推理流程是否正常。可通过 `--background` 与 `--questions` 自定义输入。
+
 ## 其他工具
-- `python.py`：快速演示脚本，展示列式布局与分支生成的基本流程。
+- `demo.py`：快速演示脚本，展示列式布局与分支生成的基本流程，可加载任意微调权重。
 - `model.py`：核心实现，涵盖 `Interleaved2DRoPE`、列同步布局构建、分支生成器等组件。
 - `data_utils.py`：SQuAD 聚合与过滤逻辑。
 
