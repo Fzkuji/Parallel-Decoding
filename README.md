@@ -64,7 +64,7 @@ python pretrain.py \
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
-- `--learning-rate` 默认 `2e-5`，可根据 batch 大小或是否启用 LoRA 调整。
+- `--learning-rate` 默认 `4e-4`，可根据 batch 大小或是否启用 LoRA 调整。
 
 ## 阶段二：SQuAD 任务微调
 `train.py` 会把 SQuAD 中相同 `context` 的问答聚合成单条样本，主干保存背景，后续问题作为分支。推荐在预训练权重基础上继续训练：
@@ -85,7 +85,7 @@ python train.py \
 - `--max-branches`：额外保留的问题数量，实际分支数 = `max_branches + 1`（包含主干）。样本问题不足时不会补空分支，超过上限则截断。
 - `--min-questions`：过滤掉问题数不足的 context。
 - `--gradient-accumulation-steps`、`--learning-rate`、`--warmup-ratio` 等与 `TrainingArguments` 一致。
-- `--learning-rate` 默认 `2e-5`，可根据是否启用 LoRA 或 batch 大小自行调整。
+- `--learning-rate` 默认 `4e-4`，可根据是否启用 LoRA 或 batch 大小自行调整。
 - 若显存紧张，可附加 `--use-lora` 及相关参数（`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`），只更新少量 LoRA 权重，大幅节省显存。LoRA 训练完成后输出目录包含适配器权重，需要在推理和评估时同时指定底模。
 
 训练过程中会自动把 `pos2d` 设置到模型的 2D RoPE 上，并为每个 batch 构造列同步 causal mask。如需多卡训练，可直接使用：
