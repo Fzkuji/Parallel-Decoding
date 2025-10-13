@@ -24,6 +24,14 @@ class ParallelDecodingDataCollator:
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.max_questions = max(1, max_questions)
+        self.eos_token = tokenizer.eos_token or ""
+
+    def _append_eos(self, text: str) -> str:
+        if not self.eos_token:
+            return text
+        if text.endswith(self.eos_token):
+            return text
+        return text + self.eos_token
 
     def _convert_example(self, example: Dict[str, Any]) -> Dict[str, Any]:
         context = example.get("context", "")
@@ -41,13 +49,13 @@ class ParallelDecodingDataCollator:
                         return candidate
             return "<no_answer>"
 
-        main = f"背景: {context}"
+        main = self._append_eos(f"背景: {context}")
 
         branches: List[str] = []
         for idx, qa in enumerate(qas, start=1):
             question = _clean(qa.get("question", ""))
             answer = _clean(_first_answer(qa.get("answers", [])))
-            branches.append(f"问题{idx}: {question}\n答案: {answer}")
+            branches.append(self._append_eos(f"问题{idx}: {question}\n答案: {answer}"))
 
         return {"main": main, "branches": branches}
 

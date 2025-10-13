@@ -47,6 +47,24 @@ class FineWebColumnarDataset(IterableDataset):
         self.streaming = streaming
         self.main_segments = max(1, min(main_segments, self.total_segments))
 
+    def _prepare_segment(self, token_ids: List[int]) -> List[int]:
+        max_len = self.seq_length
+        if max_len <= 0:
+            return []
+        eos_id = self.tokenizer.eos_token_id
+        segment = token_ids[:max_len]
+        if eos_id is None:
+            return segment
+
+        if len(segment) == max_len:
+            if segment[-1] != eos_id:
+                segment = segment[:-1] + [eos_id]
+        else:
+            segment = segment + [eos_id]
+            if len(segment) > max_len:
+                segment = segment[:max_len]
+        return segment
+
     def _decode_tokens(self, token_ids: List[int]) -> str:
         return self.tokenizer.decode(
             token_ids,
@@ -59,10 +77,7 @@ class FineWebColumnarDataset(IterableDataset):
         for idx in range(self.total_segments):
             start = idx * self.seq_length
             end = start + self.seq_length
-            segment = chunk[start:end]
-            if len(segment) < self.seq_length:
-                pad_id = self.tokenizer.pad_token_id or 0
-                segment = segment + [pad_id] * (self.seq_length - len(segment))
+            segment = self._prepare_segment(chunk[start:end])
             segments.append(segment)
 
         main_tokens: List[int] = []
@@ -96,6 +111,7 @@ class FineWebColumnarDataset(IterableDataset):
 
         chunk_size = self.seq_length * self.total_segments
         produced = 0
+        buffer: List[int] = []
         for row in dataset:
             text = row.get("text", "")
             if not text:
@@ -104,15 +120,15 @@ class FineWebColumnarDataset(IterableDataset):
             tokens = tokenized["input_ids"]
             if not tokens:
                 continue
-            start = 0
-            while start + chunk_size <= len(tokens):
-                chunk_tokens = tokens[start : start + chunk_size]
+            buffer.extend(tokens)
+            while len(buffer) >= chunk_size:
+                chunk_tokens = buffer[:chunk_size]
+                del buffer[:chunk_size]
                 sample = self._build_sample(chunk_tokens)
                 yield sample
                 produced += 1
                 if self.max_samples is not None and produced >= self.max_samples:
                     return
-                start += chunk_size
 
 
 class ColumnarPretrainCollator:
