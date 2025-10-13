@@ -1,8 +1,11 @@
 import argparse
+import json
 import math
+import os
 import re
 import string
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -131,6 +134,7 @@ def evaluate_parallel(
     max_new_tokens: int,
     max_questions: int,
     batch_size: int,
+    dump_results: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[float, int]:
     entries = list(_iter_dataset(dataset))
     total = 0
@@ -143,6 +147,7 @@ def evaluate_parallel(
         batch_entries = entries[start : start + batch_size]
         samples = []
         reference_answers: List[List[Sequence[str]]] = []
+        evaluated_entries: List[Dict[str, Any]] = []
 
         for entry in batch_entries:
             qas = entry["qas"][:max_questions]
@@ -150,6 +155,7 @@ def evaluate_parallel(
                 continue
             samples.append(_build_branch_sample(entry["context"], qas))
             reference_answers.append([qa.get("answers", [""]) for qa in qas])
+            evaluated_entries.append(entry)
 
         if not samples:
             continue
@@ -160,14 +166,33 @@ def evaluate_parallel(
             do_sample=False,
         )
 
-        for sample_result, refs in zip(result.samples, reference_answers):
-            branch_map = {branch.branch_id: branch.text for branch in sample_result.branches}
+        for entry, sample_result, refs in zip(evaluated_entries, result.samples, reference_answers):
+            predictions_clean: List[str] = []
+            predictions_raw: List[str] = []
+
             for idx, answers in enumerate(refs):
-                prediction = branch_map.get(idx, "")
-                prediction = _first_line(prediction)
+                if idx < len(sample_result.branches):
+                    branch_text = sample_result.branches[idx].text or ""
+                else:
+                    branch_text = ""
+                prediction = _first_line(branch_text)
                 if _exact_match(prediction, answers):
                     correct += 1
                 total += 1
+                predictions_clean.append(prediction)
+                predictions_raw.append(branch_text.strip())
+
+            if dump_results is not None:
+                questions = [qa.get("question", "") for qa in entry["qas"][:max_questions]]
+                dump_results.append(
+                    {
+                        "context": entry["context"],
+                        "questions": questions,
+                        "references": [list(ans) for ans in refs],
+                        "predictions": predictions_clean,
+                        "predictions_raw": predictions_raw,
+                    }
+                )
 
     return (correct / total if total else 0.0, total)
 
@@ -187,6 +212,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, help="Device override, e.g., cuda or cpu")
     parser.add_argument("--local-files-only", action="store_true", help="Force using local cached datasets and models")
     parser.add_argument("--pair-indices", type=int, nargs="*", default=[8, 16, 24], help="1-based frequency indices for 2D RoPE interleave")
+    parser.add_argument("--dump-file", type=str, help="Optional path to write JSONL predictions for parallel decoder")
     return parser.parse_args()
 
 
@@ -222,6 +248,8 @@ def main() -> None:
         )
         print(f"Baseline exact match: {base_accuracy:.4f} ({total_questions} questions)")
 
+    dump_records: Optional[List[Dict[str, Any]]] = [] if args.dump_file else None
+
     if args.ft_model:
         tokenizer_obj = None
         tokenizer_kwargs = {"local_files_only": args.local_files_only}
@@ -249,8 +277,18 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             max_questions=max_questions,
             batch_size=max(1, args.batch_size),
+            dump_results=dump_records,
         )
         print(f"Parallel decoder exact match: {parallel_accuracy:.4f} ({total_questions} questions)")
+
+    if args.dump_file and dump_records is not None:
+        dump_path = Path(args.dump_file)
+        output_dir = dump_path.parent
+        if str(output_dir) and not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+        with open(dump_path, "w", encoding="utf-8") as fout:
+            for record in dump_records:
+                fout.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

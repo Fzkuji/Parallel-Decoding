@@ -135,6 +135,8 @@ python evaluate.py \
   --max-branches 3
 ```
 
+额外可加 `--dump-file results/parallel_eval.jsonl` 将每个样本的上下文、问题、参考答案与模型预测落盘（会自动创建目录），方便排查输出质量。
+
 脚本会输出两组准确率，帮助评估预训练 + 微调后的收益。若需要离线评测，可同时传入 `--local-files-only`，确保仅使用本地缓存。
 
 如果想快速用最原始的 demo 脚本体验分支推理，可直接运行：
