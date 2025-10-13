@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.cache_utils import DynamicCache
 
 try:  # optional dependency for LoRA adapters
@@ -399,11 +399,43 @@ class ParallelDecoder:
             **tokenizer_kwargs,
         )
 
+        need_resize_embeddings = False
+        if self.tokenizer.pad_token_id is None:
+            if self.tokenizer.eos_token is not None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            else:
+                self.tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
+                need_resize_embeddings = True
+
+        config_kwargs_keys = {
+            "cache_dir",
+            "force_download",
+            "resume_download",
+            "proxies",
+            "revision",
+            "token",
+            "local_files_only",
+            "subfolder",
+            "use_auth_token",
+        }
+        config_kwargs = {key: value for key, value in model_kwargs.items() if key in config_kwargs_keys}
+
+        config = AutoConfig.from_pretrained(
+            load_model_name,
+            trust_remote_code=trust_remote_code,
+            **config_kwargs,
+        )
+        for field in ("pad_token_id", "bos_token_id", "eos_token_id"):
+            token_value = getattr(self.tokenizer, field, None)
+            if getattr(config, field, None) != token_value:
+                setattr(config, field, token_value)
+
         if model is None:
             model = AutoModelForCausalLM.from_pretrained(
                 load_model_name,
                 torch_dtype=self.dtype,
                 trust_remote_code=trust_remote_code,
+                config=config,
                 **model_kwargs,
             )
             if adapter_path is not None:
@@ -413,6 +445,9 @@ class ParallelDecoder:
                 if hasattr(model, "merge_and_unload"):
                     model = model.merge_and_unload()
         self.model = model.to(self.device)
+        if need_resize_embeddings:
+            self.model.resize_token_embeddings(len(self.tokenizer))
+        self._sync_special_token_ids()
         self.model.eval()
         patch_model_with_interleaved_2d_rope(self.model, pair_indices_1based)
 
@@ -478,6 +513,23 @@ class ParallelDecoder:
 
     def build_layout(self, samples: Sequence[Dict[str, Any]], pad_to: Optional[int] = None) -> BatchLayout:
         return build_flat_linear_layout(self.tokenizer, samples, device=self.device, pad_to=pad_to)
+
+    def _sync_special_token_ids(self) -> None:
+        """确保模型与生成配置中的特殊 token id 与 tokenizer 保持一致。"""
+
+        target_ids = {
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "bos_token_id": self.tokenizer.bos_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+        }
+        for field, value in target_ids.items():
+            if value is None:
+                continue
+            if getattr(self.model.config, field, None) != value:
+                setattr(self.model.config, field, value)
+            gen_cfg = getattr(self.model, "generation_config", None)
+            if gen_cfg is not None and getattr(gen_cfg, field, None) != value:
+                setattr(gen_cfg, field, value)
 
     @torch.no_grad()
     def forward(self, samples: Sequence[Dict[str, Any]], pad_to: Optional[int] = None, **forward_kwargs):
