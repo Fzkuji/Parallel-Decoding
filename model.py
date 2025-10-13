@@ -481,19 +481,29 @@ class ParallelDecoder:
         def _kv_seq_len(cache: Any) -> Optional[int]:
             if cache is None:
                 return None
+
+            legacy_view: Optional[Tuple[Any, ...]] = None
+            if isinstance(cache, tuple):
+                legacy_view = cache
+            elif hasattr(cache, "to_legacy_cache"):
+                try:
+                    legacy_view = cache.to_legacy_cache()
+                except Exception:
+                    legacy_view = None
+
+            if legacy_view is not None:
+                for layer in legacy_view:
+                    if layer is None:
+                        continue
+                    if isinstance(layer, tuple) and layer and layer[0] is not None:
+                        return layer[0].shape[-2]
+
             if hasattr(cache, "get_seq_length"):
                 try:
                     return int(cache.get_seq_length())
                 except Exception:
-                    pass
-            iterator = cache if isinstance(cache, tuple) else None
-            if iterator is None:
-                return None
-            for layer in iterator:
-                if layer is None:
-                    continue
-                if isinstance(layer, tuple) and layer and layer[0] is not None:
-                    return layer[0].shape[-2]
+                    return None
+
             return None
 
         for idx in range(len(samples)):
