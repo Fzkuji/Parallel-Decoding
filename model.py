@@ -523,8 +523,6 @@ class ParallelDecoder:
             "eos_token_id": self.tokenizer.eos_token_id,
         }
         for field, value in target_ids.items():
-            if value is None:
-                continue
             if getattr(self.model.config, field, None) != value:
                 setattr(self.model.config, field, value)
             gen_cfg = getattr(self.model, "generation_config", None)

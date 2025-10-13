@@ -227,6 +227,13 @@ def parse_args():
         default=["q_proj", "k_proj", "v_proj", "o_proj"],
     )
     parser.add_argument("--main-segments", type=int, default=2, help="Number of segments assigned to the main branch")
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        help="启用梯度检查点降低显存占用（会禁用 use_cache）",
+    )
+    parser.add_argument("--fp16", action="store_true", help="在 fp16 模式下训练")
+    parser.add_argument("--bf16", action="store_true", help="在 bf16 模式下训练")
     return parser.parse_args()
 
 
@@ -294,6 +301,8 @@ def main():
         remove_unused_columns=False,
         seed=args.seed,
         ddp_find_unused_parameters=False,
+        fp16=args.fp16,
+        bf16=args.bf16,
     )
 
     trainer = PretrainTrainer(
@@ -303,6 +312,11 @@ def main():
         data_collator=collator,
         tokenizer=tokenizer,
     )
+
+    if args.gradient_checkpointing:
+        trainer.model.gradient_checkpointing_enable()
+        if hasattr(trainer.model.config, "use_cache"):
+            trainer.model.config.use_cache = False
 
     trainer.train()
     trainer.save_model(args.output_dir)
