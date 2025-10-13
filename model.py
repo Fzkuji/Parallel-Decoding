@@ -262,12 +262,12 @@ def build_flat_linear_layout(
 
         entries: List[Tuple[int, int, int, int]] = []
         branch_start_y: List[int] = []
-        branch_lengths: List[int] = []
+        branch_lengths_raw: List[int] = []
         branch_pos1d_end = [-1 for _ in branch_sequences]
 
         for idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
             seq_len = tokens.numel()
-            branch_lengths.append(seq_len)
+            branch_lengths_raw.append(seq_len)
             if seq_len == 0:
                 start_col = 0 if idx == 0 else (main_len if main_len > 0 else 0)
                 branch_start_y.append(start_col)
@@ -288,13 +288,19 @@ def build_flat_linear_layout(
                 entries.append((time_value, branch_id, order, int(token.item())))
 
         entries.sort()
-        sorted_ids = [entry[3] for entry in entries]
-        sorted_branch = [entry[1] for entry in entries]
-        sorted_time = [entry[0] for entry in entries]
+        token_count = len(entries)
+        effective_len = min(token_count, global_T)
+        entries_eff = entries[:effective_len]
 
-        for pos_idx, (_, branch_id, _, _) in enumerate(entries):
+        sorted_ids = [entry[3] for entry in entries_eff]
+        sorted_branch = [entry[1] for entry in entries_eff]
+        sorted_time = [entry[0] for entry in entries_eff]
+
+        branch_lengths_eff = [0 for _ in branch_sequences]
+        for pos_idx, (time_val, branch_id, _, _) in enumerate(entries_eff):
             if branch_id < len(branch_pos1d_end):
                 branch_pos1d_end[branch_id] = pos_idx
+                branch_lengths_eff[branch_id] += 1
 
         ids_tensor = (
             torch.tensor(sorted_ids, dtype=torch.long, device=device)
@@ -305,24 +311,24 @@ def build_flat_linear_layout(
         input_ids_batch.append(seq_padded)
 
         mask_row = torch.zeros(1, global_T, device=device, dtype=torch.long)
-        token_count = len(sorted_ids)
-        mask_row[0, : min(token_count, global_T)] = 1
+        mask_row[0, : effective_len] = 1
         attn_batch.append(mask_row)
 
         pos1d_row = torch.arange(global_T, device=device)[None, :]
         pos1d_batch.append(pos1d_row)
 
         pos2d_seq = torch.zeros(global_T, 2, device=device, dtype=torch.long)
-        if token_count > 0:
-            pos2d_seq[:token_count, 0] = torch.tensor(sorted_branch, dtype=torch.long, device=device)
-            pos2d_seq[:token_count, 1] = torch.tensor(sorted_time, dtype=torch.long, device=device)
+        if effective_len > 0:
+            pos2d_seq[:effective_len, 0] = torch.tensor(sorted_branch, dtype=torch.long, device=device)
+            pos2d_seq[:effective_len, 1] = torch.tensor(sorted_time, dtype=torch.long, device=device)
         pos2d_batch.append(pos2d_seq[None, :, :])
 
         time_row = torch.full((global_T,), -1, device=device, dtype=torch.long)
-        if token_count > 0:
-            time_row[:token_count] = torch.tensor(sorted_time, dtype=torch.long, device=device)
+        if effective_len > 0:
+            time_row[:effective_len] = torch.tensor(sorted_time, dtype=torch.long, device=device)
         time_batch.append(time_row[None, :])
 
+        branch_lengths = branch_lengths_eff
         metadata.append(
             LayoutMetadata(
                 branch_ids=branch_ids,

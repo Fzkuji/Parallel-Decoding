@@ -98,6 +98,7 @@ class ColumnarPretrainCollator:
         self.tokenizer = tokenizer
         self.seq_length = seq_length
         self.branch_count = branch_count
+        self.total_length = seq_length * max(1, branch_count)
 
     def __call__(self, features: List[Dict[str, List[str]]]) -> Dict[str, torch.Tensor]:
         samples = []
@@ -111,7 +112,7 @@ class ColumnarPretrainCollator:
             self.tokenizer,
             samples,
             device=torch.device("cpu"),
-            pad_to=None,
+            pad_to=self.total_length,
         )
         labels = layout.input_ids.clone()
         labels[layout.attention_mask == 0] = -100
@@ -249,8 +250,6 @@ def main():
         report_to=[],
         remove_unused_columns=False,
         seed=args.seed,
-        dispatch_batches=False,
-        split_batches=True,
     )
 
     trainer = PretrainTrainer(
