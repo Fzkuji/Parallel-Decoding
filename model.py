@@ -356,11 +356,32 @@ def build_flat_linear_layout(
     )
 
 
+def _auto_select_pair_indices(model: torch.nn.Module, ratio: float) -> Tuple[int, ...]:
+    """Select rotary pair indices automatically based on the model's RoPE size."""
+
+    if ratio <= 0:
+        raise ValueError("ratio must be positive")
+    holder = _find_rotary_holder(model)
+    base_rope = holder.rotary_emb
+    inv_freq = getattr(base_rope, "inv_freq", None)
+    if inv_freq is None:
+        raise RuntimeError("rotary_emb.inv_freq 未找到，无法自动选择 pair indices")
+
+    freq_count = int(inv_freq.numel())
+    if freq_count <= 0:
+        raise RuntimeError("rotary_emb.inv_freq 维度为 0，无法自动选择 pair indices")
+
+    pair_count = max(1, min(freq_count, int(round(freq_count * ratio))))
+    start = max(1, freq_count - pair_count + 1)
+    return tuple(range(start, freq_count + 1))
+
+
 class ParallelDecoder:
     def __init__(
         self,
         model_name: str = "Qwen/Qwen3-4B",
-        pair_indices_1based: Sequence[int] = (8, 16, 24),
+        pair_indices_1based: Optional[Sequence[int]] = None,
+        pair_ratio: float = 0.25,
         device: Optional[str] = None,
         torch_dtype: Optional[torch.dtype] = None,
         tokenizer: Optional[AutoTokenizer] = None,
@@ -378,6 +399,7 @@ class ParallelDecoder:
         self.dtype = torch_dtype
         self.model_name = model_name
         self.adapter_base_model = adapter_base_model
+        self.pair_ratio = pair_ratio
 
         tokenizer_kwargs = tokenizer_kwargs or {}
         model_kwargs = model_kwargs or {}
@@ -449,7 +471,13 @@ class ParallelDecoder:
             self.model.resize_token_embeddings(len(self.tokenizer))
         self._sync_special_token_ids()
         self.model.eval()
-        patch_model_with_interleaved_2d_rope(self.model, pair_indices_1based)
+        if pair_indices_1based is None:
+            auto_pairs = _auto_select_pair_indices(self.model, self.pair_ratio)
+            pair_indices = auto_pairs
+        else:
+            pair_indices = tuple(pair_indices_1based)
+        self.pair_indices_1based = pair_indices
+        patch_model_with_interleaved_2d_rope(self.model, pair_indices)
 
     def _slice_past(self, past_kv: Any, idx: int) -> Any:
         if past_kv is None:
