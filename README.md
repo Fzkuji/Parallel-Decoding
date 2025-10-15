@@ -52,10 +52,10 @@ python pretrain.py \
   --dataset-name HuggingFaceFW/fineweb-edu \
   --dataset-config sample-10BT \
   --dataset-split train \
-  --branch-count 16 \
-  --main-segments 2 \
-  --seq-length 256 \
-  --batch-size 1 \
+  --branch-count 8 \
+  --main-segments 4 \
+  --seq-length 512 \
+  --batch-size 2 \
   --gradient-accumulation-steps 1 \
   --max-steps 20480
 ```
@@ -65,7 +65,7 @@ python pretrain.py \
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
-- `--learning-rate` 默认 `4e-4`，可根据 batch 大小或是否启用 LoRA 调整。
+- `--learning-rate` 默认 `1e-4`，在显存紧张或 LoRA 训练时一般无需再调高，可按 batch 大小与收敛情况微调。
 - 若显存有限，可加 `--use-lora` 与 `--lora-*` 参数，仅训练 LoRA 适配器，实现低开销预训练。
 - 多卡运行示例：
 
@@ -101,7 +101,7 @@ python train.py \
 - `--max-branches`：额外保留的问题数量，实际分支数 = `max_branches + 1`（包含主干）。样本问题不足时不会补空分支，超过上限则截断。
 - `--min-questions`：过滤掉问题数不足的 context。
 - `--gradient-accumulation-steps`、`--learning-rate`、`--warmup-ratio` 等与 `TrainingArguments` 一致。
-- `--learning-rate` 默认 `4e-4`，可根据是否启用 LoRA 或 batch 大小自行调整。
+- `--learning-rate` 默认 `1e-4`，足以在多分支布局下稳定训练，如需更快收敛可在监控 loss 的前提下酌情增减。
 - 若显存紧张，可附加 `--use-lora` 及相关参数（`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`），只更新少量 LoRA 权重，大幅节省显存。LoRA 训练完成后输出目录包含适配器权重，需要在推理和评估时同时指定底模。
 - 如果希望保留所有 SQuAD context（不对问题数做筛选），可以传入 `--min-questions 1 --max-branches 0`，模型会逐个问题构造样本。或者设置 `--min-questions 1 --max-branches N`，每条样本保留最多 `N+1` 个问题，避免因问题数不足被过滤。
 

@@ -208,7 +208,7 @@ def parse_args():
     parser.add_argument("--branch-count", type=int, default=4)
     parser.add_argument("--seq-length", type=int, default=1024)
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--learning-rate", type=float, default=4e-4)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)

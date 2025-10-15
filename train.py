@@ -128,7 +128,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--eval-batch-size", type=int, default=1)
     parser.add_argument("--epochs", type=float, default=1.0)
-    parser.add_argument("--learning-rate", type=float, default=4e-4)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--max-train-samples", type=int)
     parser.add_argument("--max-eval-samples", type=int)
     parser.add_argument("--min-questions", type=int, default=2)
