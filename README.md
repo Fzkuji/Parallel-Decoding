@@ -66,7 +66,7 @@ python pretrain.py \
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
 - `--learning-rate` 默认 `1e-4`，在显存紧张或 LoRA 训练时一般无需再调高，可按 batch 大小与收敛情况微调。
-- 预训练样本会按段落（换行）切分：首先从原文中截取不超过 `--max-total-tokens`（默认 4096）的内容，前半部分段落拼成主干，剩余段落按顺序均分到各个分支，确保模型看到完整背景再并行续写。
+- 预训练样本会按段落（换行）切分：首先从原文中截取不超过 `--max-total-tokens`（默认 4096）的内容，前半部分段落拼成主干，剩余段落按顺序均分到各个分支。主干与每个分支内部使用空行（`\n\n`）分隔段落，并在整体结尾补上 tokenizer 的 `eos_token`，确保模型学习到明确的结束标记。
 - 若显存有限，可加 `--use-lora` 与 `--lora-*` 参数，仅训练 LoRA 适配器，实现低开销预训练。
 - `--max-total-tokens` 控制每条原始文本在分段前最多使用多少 token，可根据 seq_length × branch_count 调整，防止超长段落。
 - 多卡运行示例：

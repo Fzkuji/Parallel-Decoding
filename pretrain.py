@@ -51,6 +51,23 @@ class FineWebColumnarDataset(IterableDataset):
         self.expected_branches = max(0, self.total_segments - self.main_segments)
         self.max_total_tokens = max_total_tokens if (max_total_tokens is None or max_total_tokens > 0) else None
 
+    def _append_eos(self, text: str) -> str:
+        eos = self.tokenizer.eos_token
+        if eos and not text.endswith(eos):
+            return text + eos
+        return text
+
+    @staticmethod
+    def _ensure_double_newline(text: str) -> str:
+        if not text:
+            return text
+        stripped = text.rstrip()
+        if stripped.endswith("\n\n"):
+            return stripped
+        if stripped.endswith("\n"):
+            return stripped + "\n"
+        return stripped + "\n\n"
+
     def _prepare_segment(self, token_ids: List[int]) -> List[int]:
         max_len = self.seq_length
         if max_len <= 0:
@@ -131,7 +148,8 @@ class FineWebColumnarDataset(IterableDataset):
         main_text = "\n\n".join(main_paragraphs)
 
         if self.expected_branches <= 0:
-            return {"main": main_text, "branches": []}
+            main_text = self._ensure_double_newline(main_text)
+            return {"main": self._append_eos(main_text), "branches": []}
 
         chunk_size = max(1, math.ceil(len(branch_candidates) / self.expected_branches))
         branch_texts: List[str] = []
@@ -141,11 +159,15 @@ class FineWebColumnarDataset(IterableDataset):
                 break
             end = min(len(branch_candidates), (idx + 1) * chunk_size)
             branch_chunk = "\n\n".join(branch_candidates[start:end]).strip()
+            branch_chunk = self._ensure_double_newline(branch_chunk)
             branch_texts.append(branch_chunk)
 
         branch_texts = [b for b in branch_texts if b]
         if not branch_texts:
             return None
+
+        main_text = self._append_eos(self._ensure_double_newline(main_text))
+        branch_texts = [self._append_eos(branch) for branch in branch_texts]
 
         return {"main": main_text, "branches": branch_texts}
 
