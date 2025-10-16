@@ -60,7 +60,7 @@ python pretrain.py \
   --max-steps 20480
 ```
 
-- `--branch-count` 决定将一段文本切成多少个等长片段；`--main-segments` 指定前多少个片段拼接成主干，其余片段作为分支，默认 2。比如 `--branch-count 8 --main-segments 2 --seq-length 256` 会从同一段长文本中切出 8×256 个 token：前 512 token 组成主干，剩余 6 个分支都从列 256 开始接续，实现「共享背景 + 并行续写」。
+- `--branch-count` 现在默认 12，表示最多允许多少条并行分支；`--main-segments` 仍指定主干至少包含的段落数（默认 2）。数据集会在 `--max-total-tokens` 预算内按段落切分：前半段落拼成主干，其余段落按顺序均分到各分支，多余的分支会被自动舍弃或补空。
 - 默认使用本地（非 streaming）加载。如需避免一次性下载，可附加 `--streaming` 切换到 HF streaming 接口。
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
@@ -76,9 +76,10 @@ python pretrain.py \
     --dataset-name HuggingFaceFW/fineweb-edu \
     --dataset-config sample-10BT \
     --dataset-split train \
-    --branch-count 8 \
-    --main-segments 2 \
-    --seq-length 256 \
+    --branch-count 12 \
+    --main-segments 4 \
+    --seq-length 2048 \
+    --max-total-tokens 4096 \
     --batch-size 4 \
     --gradient-accumulation-steps 4 \
     --max-steps 10240
