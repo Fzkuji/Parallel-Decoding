@@ -60,7 +60,7 @@ python pretrain.py \
   --max-steps 20480
 ```
 
-- `--branch-count` 现在默认 12，表示最多允许多少条并行分支；`--main-segments` 仍指定主干至少包含的段落数（默认 2）。数据集会在 `--max-total-tokens` 预算内按段落切分：前半段落拼成主干，其余段落按顺序均分到各分支，多余的分支会被自动舍弃或补空。
+- `--branch-count` 默认 0，表示不预设分支上限；数据集会在 `--max-total-tokens` 预算内按段落切分：前半段落拼成主干，其余段落按顺序分配到分支，多余的分支会被自动舍弃或补空。
 - 默认使用本地（非 streaming）加载。如需避免一次性下载，可附加 `--streaming` 切换到 HF streaming 接口。
 - `--dataset-config` 选择 FineWeb 的子集（默认 `sample-10BT`），`--dataset-split` 通常保持 `train`。
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
@@ -68,7 +68,14 @@ python pretrain.py \
 - `--learning-rate` 默认 `1e-4`，在显存紧张或 LoRA 训练时一般无需再调高，可按 batch 大小与收敛情况微调。
 - 预训练样本会按段落（换行）切分：首先从原文中截取不超过 `--max-total-tokens`（默认 4096）的内容，前半部分段落拼成主干，剩余段落按顺序均分到各个分支。主干与每个分支内部使用空行（`\n\n`）分隔段落，并在整体结尾补上 tokenizer 的 `eos_token`，确保模型学习到明确的结束标记。
 - 若显存有限，可加 `--use-lora` 与 `--lora-*` 参数，仅训练 LoRA 适配器，实现低开销预训练。
-- `--max-total-tokens` 控制每条原始文本在分段前最多使用多少 token，可根据 seq_length × branch_count 调整，防止超长段落。
+- `--max-total-tokens` 控制每条原始文本在分段前最多使用多少 token；如需完全放开，可设置为 0 或较大值。
+- 默认关键参数：
+  - `--branch-count=0`：0 表示不设上限，预训练会按剩余段落自动确定分支数；如需限制，可设为具体值。
+  - `--main-segments=2`：主干至少覆盖 2 个段落；段落少于该值时会自动降到 `总段落数-1`。
+  - `--seq-length=0`：0 表示不做单段截断；若希望限制单段 token 数，可传入目标长度并配合 `--branch-count` 控制 padding 上限。
+  - `--max-total-tokens=4096`：段落采样阶段的整体 token 预算，可传 0 或大值以放宽限制。
+  - 其余默认值可通过 `python pretrain.py --help` 查看。
+
 - 多卡运行示例：
 
   ```bash
@@ -76,13 +83,10 @@ python pretrain.py \
     --dataset-name HuggingFaceFW/fineweb-edu \
     --dataset-config sample-10BT \
     --dataset-split train \
-    --branch-count 12 \
-    --main-segments 4 \
-    --seq-length 2048 \
-    --max-total-tokens 4096 \
     --batch-size 4 \
     --gradient-accumulation-steps 4 \
-    --max-steps 10240
+    --max-steps 10240 \
+    --max-total-tokens 4096
   ```
 
 ## 阶段二：SQuAD 任务微调

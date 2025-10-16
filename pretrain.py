@@ -39,16 +39,15 @@ class FineWebColumnarDataset(IterableDataset):
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
-        self.total_segments = max(1, branch_count)
-        self.seq_length = seq_length
+        self.fixed_branch_count = branch_count if branch_count and branch_count > 0 else None
+        self.seq_length = max(0, seq_length)
         self.split = split
         self.dataset_name = dataset_name
         self.config_name = config_name
         self.max_samples = max_samples
         self.local_files_only = local_files_only
         self.streaming = streaming
-        self.main_segments = max(1, min(main_segments, self.total_segments))
-        self.expected_branches = max(0, self.total_segments - self.main_segments)
+        self.main_segments = max(1, main_segments)
         self.max_total_tokens = max_total_tokens if (max_total_tokens is None or max_total_tokens > 0) else None
 
     def _append_eos(self, text: str) -> str:
@@ -102,12 +101,8 @@ class FineWebColumnarDataset(IterableDataset):
             return None
 
         token_budget = self.max_total_tokens
-        if token_budget is None:
-            token_budget = self.seq_length * self.total_segments
-        else:
-            token_budget = min(token_budget, self.seq_length * self.total_segments)
-        if token_budget <= 0:
-            token_budget = self.seq_length * self.total_segments
+        if token_budget is not None and token_budget <= 0:
+            token_budget = None
 
         selected_paragraphs: List[str] = []
         used_tokens = 0
@@ -116,18 +111,21 @@ class FineWebColumnarDataset(IterableDataset):
             ids = encoded["input_ids"]
             if not ids:
                 continue
-            if used_tokens + len(ids) > token_budget and selected_paragraphs:
+            if token_budget is not None and used_tokens + len(ids) > token_budget and selected_paragraphs:
                 break
-            if used_tokens + len(ids) > token_budget and not selected_paragraphs:
+            if token_budget is not None and used_tokens + len(ids) > token_budget and not selected_paragraphs:
                 # paragraph itself exceeds budget; truncate tokens and decode back
                 truncated = ids[: token_budget]
-                paragraph = self._decode_tokens(self._prepare_segment(truncated))
+                if self.seq_length > 0:
+                    paragraph = self._decode_tokens(self._prepare_segment(truncated))
+                else:
+                    paragraph = self._decode_tokens(truncated)
                 used_tokens = token_budget
                 selected_paragraphs.append(paragraph)
                 break
             selected_paragraphs.append(paragraph)
             used_tokens += len(ids)
-            if used_tokens >= token_budget:
+            if token_budget is not None and used_tokens >= token_budget:
                 break
 
         if len(selected_paragraphs) < 2:
@@ -147,20 +145,23 @@ class FineWebColumnarDataset(IterableDataset):
 
         main_text = "\n\n".join(main_paragraphs)
 
-        if self.expected_branches <= 0:
-            main_text = self._ensure_double_newline(main_text)
-            return {"main": self._append_eos(main_text), "branches": []}
-
-        chunk_size = max(1, math.ceil(len(branch_candidates) / self.expected_branches))
         branch_texts: List[str] = []
-        for idx in range(self.expected_branches):
-            start = idx * chunk_size
-            if start >= len(branch_candidates):
-                break
-            end = min(len(branch_candidates), (idx + 1) * chunk_size)
-            branch_chunk = "\n\n".join(branch_candidates[start:end]).strip()
-            branch_chunk = self._ensure_double_newline(branch_chunk)
-            branch_texts.append(branch_chunk)
+        if self.fixed_branch_count is None:
+            for chunk in branch_candidates:
+                branch_texts.append(self._ensure_double_newline(chunk.strip()))
+        else:
+            expected_branches = max(0, self.fixed_branch_count - self.main_segments)
+            if expected_branches <= 0:
+                main_text = self._ensure_double_newline(main_text)
+                return {"main": self._append_eos(main_text), "branches": []}
+            chunk_size = max(1, math.ceil(len(branch_candidates) / expected_branches))
+            for idx in range(expected_branches):
+                start = idx * chunk_size
+                if start >= len(branch_candidates):
+                    break
+                end = min(len(branch_candidates), (idx + 1) * chunk_size)
+                branch_chunk = "\n\n".join(branch_candidates[start:end]).strip()
+                branch_texts.append(self._ensure_double_newline(branch_chunk))
 
         branch_texts = [b for b in branch_texts if b]
         if not branch_texts:
@@ -204,25 +205,19 @@ class FineWebColumnarDataset(IterableDataset):
 class ColumnarPretrainCollator:
     def __init__(self, tokenizer, seq_length: int, branch_count: int, main_segments: int) -> None:
         self.tokenizer = tokenizer
-        self.seq_length = seq_length
-        self.total_segments = max(1, branch_count)
-        self.main_segments = max(1, min(main_segments, self.total_segments))
-        self.expected_branches = max(0, self.total_segments - self.main_segments)
-        self.total_length = seq_length * self.total_segments
+        if seq_length > 0 and branch_count > 0:
+            self.pad_to = seq_length * branch_count
+        else:
+            self.pad_to = None
 
     def __call__(self, features: List[Dict[str, List[str]]]) -> Dict[str, torch.Tensor]:
-        samples = []
-        for feat in features:
-            branches = feat.get("branches", [])
-            if len(branches) < self.expected_branches:
-                branches = branches + [""] * (self.expected_branches - len(branches))
-            samples.append({"main": feat.get("main", ""), "branches": branches})
+        samples = [{"main": feat.get("main", ""), "branches": feat.get("branches", [])} for feat in features]
 
         layout = build_flat_linear_layout(
             self.tokenizer,
             samples,
             device=torch.device("cpu"),
-            pad_to=self.total_length,
+            pad_to=self.pad_to,
         )
         labels = layout.input_ids.clone()
         labels[layout.attention_mask == 0] = -100
@@ -275,8 +270,8 @@ def parse_args():
     parser.add_argument("--dataset-name", type=str, default="HuggingFaceFW/fineweb-edu")
     parser.add_argument("--dataset-config", type=str, default="sample-10BT")
     parser.add_argument("--dataset-split", type=str, default="train")
-    parser.add_argument("--branch-count", type=int, default=12)
-    parser.add_argument("--seq-length", type=int, default=2048)
+    parser.add_argument("--branch-count", type=int, default=0, help="Maximum number of branches; 0 表示自动按段落确定")
+    parser.add_argument("--seq-length", type=int, default=0, help="可选的单段截断长度；0 表示不限制")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--max-steps", type=int, default=100)
