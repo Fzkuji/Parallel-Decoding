@@ -87,8 +87,10 @@ def main() -> None:
     for idx, meta in enumerate(layout.metadata):
         print(f"- Sample {idx}:")
         print(f"  branch_ids       : {meta.branch_ids}")
+        print(f"  branch_positions : {meta.branch_positions}")
         print(f"  branch_lengths   : {meta.branch_lengths}")
         print(f"  branch_start_y   : {meta.branch_start_y}")
+        print(f"  branch_pos1d_end : {meta.branch_pos1d_end}")
         print(f"  background_branch: {meta.background_branch_id}")
         print(f"  sequence_length  : {layout.attention_mask[idx].sum().item()}")
 

@@ -95,14 +95,17 @@ def pad_to_length(x: torch.Tensor, length: int, pad_id: int) -> torch.Tensor:
     return torch.cat([x, pad], dim=-1)
 
 
+DEFAULT_BRANCH_POSITION_STRIDE = 4
+
+
 @dataclass
 class LayoutMetadata:
     branch_ids: List[int]
+    branch_positions: List[int]
     branch_lengths: List[int]
     branch_start_y: List[int]
     branch_pos1d_end: List[int]
     background_branch_id: int
-    branch_pos1d_end: List[int]
 
 
 @dataclass
@@ -209,6 +212,7 @@ def build_flat_linear_layout(
     samples: Sequence[Dict[str, Any]],
     device: torch.device,
     pad_to: Optional[int] = None,
+    branch_stride: int = DEFAULT_BRANCH_POSITION_STRIDE,
 ) -> BatchLayout:
     tokenized: List[Dict[str, Any]] = []
     max_len = 0
@@ -253,6 +257,7 @@ def build_flat_linear_layout(
         branch_sequences.extend(branch_token_list)
 
         branch_ids = list(range(len(branch_sequences)))
+        branch_positions = [branch_id * branch_stride for branch_id in branch_ids]
         non_main_count = len(branch_sequences) - (1 if main_len > 0 else 0)
         max_branch_len = (
             max((seq.numel() for seq in branch_sequences[(1 if main_len > 0 else 0):]), default=0)
@@ -293,7 +298,7 @@ def build_flat_linear_layout(
         entries_eff = entries[:effective_len]
 
         sorted_ids = [entry[3] for entry in entries_eff]
-        sorted_branch = [entry[1] for entry in entries_eff]
+        sorted_branch_pos = [branch_positions[entry[1]] for entry in entries_eff]
         sorted_time = [entry[0] for entry in entries_eff]
 
         branch_lengths_eff = [0 for _ in branch_sequences]
@@ -319,7 +324,7 @@ def build_flat_linear_layout(
 
         pos2d_seq = torch.zeros(global_T, 2, device=device, dtype=torch.long)
         if effective_len > 0:
-            pos2d_seq[:effective_len, 0] = torch.tensor(sorted_branch, dtype=torch.long, device=device)
+            pos2d_seq[:effective_len, 0] = torch.tensor(sorted_branch_pos, dtype=torch.long, device=device)
             pos2d_seq[:effective_len, 1] = torch.tensor(sorted_time, dtype=torch.long, device=device)
         pos2d_batch.append(pos2d_seq[None, :, :])
 
@@ -332,6 +337,7 @@ def build_flat_linear_layout(
         metadata.append(
             LayoutMetadata(
                 branch_ids=branch_ids,
+                branch_positions=branch_positions,
                 branch_lengths=branch_lengths,
                 branch_start_y=branch_start_y,
                 branch_pos1d_end=branch_pos1d_end,
@@ -390,6 +396,7 @@ class ParallelDecoder:
         tokenizer_kwargs: Optional[Dict[str, Any]] = None,
         model_kwargs: Optional[Dict[str, Any]] = None,
         adapter_base_model: Optional[str] = None,
+        branch_stride: int = DEFAULT_BRANCH_POSITION_STRIDE,
     ) -> None:
         if device is None or torch_dtype is None:
             picked_device, picked_dtype = pick_device_and_dtype()
@@ -400,6 +407,7 @@ class ParallelDecoder:
         self.model_name = model_name
         self.adapter_base_model = adapter_base_model
         self.pair_ratio = pair_ratio
+        self.branch_stride = max(1, int(branch_stride))
 
         tokenizer_kwargs = tokenizer_kwargs or {}
         model_kwargs = model_kwargs or {}
@@ -540,7 +548,13 @@ class ParallelDecoder:
         return past_kv
 
     def build_layout(self, samples: Sequence[Dict[str, Any]], pad_to: Optional[int] = None) -> BatchLayout:
-        return build_flat_linear_layout(self.tokenizer, samples, device=self.device, pad_to=pad_to)
+        return build_flat_linear_layout(
+            self.tokenizer,
+            samples,
+            device=self.device,
+            pad_to=pad_to,
+            branch_stride=self.branch_stride,
+        )
 
     def _sync_special_token_ids(self) -> None:
         """确保模型与生成配置中的特殊 token id 与 tokenizer 保持一致。"""
@@ -657,6 +671,7 @@ class ParallelDecoder:
 
         for sample_idx, meta in enumerate(layout.metadata):
             branch_ids_tensor = torch.tensor(meta.branch_ids, device=self.device, dtype=layout.pos2d.dtype)
+            branch_positions_tensor = torch.tensor(meta.branch_positions, device=self.device, dtype=layout.pos2d.dtype)
             branch_lengths_tensor = torch.tensor(meta.branch_lengths, device=self.device, dtype=layout.pos2d.dtype)
             branch_start_y_tensor = torch.tensor(meta.branch_start_y, device=self.device, dtype=layout.pos2d.dtype)
             branch_pos1d_tensor = torch.tensor(meta.branch_pos1d_end, device=self.device, dtype=layout.pos1d.dtype)
@@ -678,6 +693,7 @@ class ParallelDecoder:
             branch_states.append(
                 {
                     "ids": branch_ids_tensor,
+                    "positions": branch_positions_tensor,
                     "ymax": branch_ymax_tensor,
                     "pos1d": branch_pos1d_tensor,
                     "background": torch.tensor(meta.background_branch_id, device=self.device, dtype=torch.long),
@@ -695,6 +711,7 @@ class ParallelDecoder:
         for _ in range(max_new_tokens):
             for sample_idx in range(len(samples)):
                 ids_tensor = branch_states[sample_idx]["ids"]
+                positions_tensor = branch_states[sample_idx]["positions"]
                 ymax_tensor = branch_states[sample_idx]["ymax"]
 
                 if branch_schedule is None:
@@ -737,7 +754,7 @@ class ParallelDecoder:
                         dtype=layout.pos1d.dtype,
                     )
 
-                    branch_x = ids_tensor[branch_idx].view(1, 1)
+                    branch_x = positions_tensor[branch_idx].view(1, 1)
                     y_next = (ymax_tensor[branch_idx] + 1).view(1, 1)
                     pos2d_next = torch.stack([branch_x, y_next], dim=-1)
                     set_rope_pos2d(self.model, pos2d_next)
