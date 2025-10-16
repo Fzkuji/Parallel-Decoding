@@ -95,7 +95,7 @@ def pad_to_length(x: torch.Tensor, length: int, pad_id: int) -> torch.Tensor:
     return torch.cat([x, pad], dim=-1)
 
 
-DEFAULT_BRANCH_POSITION_STRIDE = 8
+DEFAULT_BRANCH_POSITION_STRIDE = 32
 
 
 @dataclass
@@ -601,7 +601,9 @@ class ParallelDecoder:
         temperature: float = 0.0,
         do_sample: bool = False,
         branch_schedule: Optional[Sequence[int]] = None,
+        repetition_penalty: float = 1.0,
     ) -> GenerationResult:
+        repetition_penalty = repetition_penalty if repetition_penalty and repetition_penalty > 0 else 1.0
         layout = self.build_layout(samples, pad_to=pad_to)
 
         set_rope_pos2d(self.model, layout.pos2d)
@@ -775,6 +777,17 @@ class ParallelDecoder:
                     )
 
                     logits = out.logits[:, -1, :]
+                    if repetition_penalty != 1.0:
+                        logits_adjusted = logits.clone()
+                        prev_tokens = seq_list[sample_idx][0].tolist()
+                        if prev_tokens:
+                            for token_id in set(prev_tokens):
+                                value = logits_adjusted[0, token_id]
+                                if value < 0:
+                                    logits_adjusted[0, token_id] = value * repetition_penalty
+                                else:
+                                    logits_adjusted[0, token_id] = value / repetition_penalty
+                        logits = logits_adjusted
                     if do_sample and temperature > 0:
                         probs = torch.softmax(logits / temperature, dim=-1)
                         next_token = torch.multinomial(probs, num_samples=1)

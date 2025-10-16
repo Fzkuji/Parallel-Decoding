@@ -357,6 +357,19 @@ def main():
         max_total_tokens=args.max_total_tokens,
     )
 
+    preview_sample = None
+    try:
+        preview_sample = next(iter(dataset))
+    except StopIteration:
+        preview_sample = None
+
+    if preview_sample is not None:
+        print("=== Preview sample ===")
+        print("Main:\n", preview_sample.get("main", ""))
+        for idx, branch_text in enumerate(preview_sample.get("branches", []), start=1):
+            print(f"Branch {idx}:\n{branch_text}")
+        print("=====================")
+
     collator = ColumnarPretrainCollator(
         tokenizer=tokenizer,
         seq_length=args.seq_length,

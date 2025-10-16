@@ -102,6 +102,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=64, help="Maximum tokens to generate per branch")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     parser.add_argument("--do-sample", action="store_true", help="Enable sampling instead of greedy decoding")
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.05,
+        help="Penalty factor (>1.0) to discourage repeated tokens during generation",
+    )
     parser.add_argument("--local-files-only", action="store_true", help="Restrict model/tokenizer loading to local cache")
     parser.add_argument("--show-linear", action="store_true", help="Print linearized merged outputs in addition to branch answers")
     return parser.parse_args()
@@ -159,6 +165,7 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         do_sample=args.do_sample,
         temperature=args.temperature,
+        repetition_penalty=args.repetition_penalty,
     )
 
     for idx, sample_result in enumerate(result.samples):
