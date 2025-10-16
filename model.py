@@ -106,6 +106,7 @@ class LayoutMetadata:
     branch_start_y: List[int]
     branch_pos1d_end: List[int]
     background_branch_id: int
+    answer_token_starts: List[int]
 
 
 @dataclass
@@ -226,6 +227,31 @@ def build_flat_linear_layout(
             for txt in branches
         ]
 
+        answer_start_positions: List[int] = []
+        for idx, branch_ids_tensor in enumerate(branches_ids):
+            branch_text = branches[idx]
+            marker = "答案:"
+            marker_pos = branch_text.find(marker)
+            marker_len = len(marker)
+            if marker_pos < 0:
+                marker = "Answer:"
+                marker_pos = branch_text.find(marker)
+                marker_len = len(marker)
+            if marker_pos < 0:
+                answer_start_positions.append(int(branch_ids_tensor.numel()))
+            else:
+                suffix = branch_text[marker_pos + marker_len :].lstrip()
+                if suffix:
+                    suffix_ids = tokenizer(
+                        suffix,
+                        add_special_tokens=False,
+                        return_tensors="pt",
+                    ).input_ids[0]
+                    start_offset = branch_ids_tensor.numel() - suffix_ids.numel()
+                    answer_start_positions.append(max(0, int(start_offset)))
+                else:
+                    answer_start_positions.append(int(branch_ids_tensor.numel()))
+
         total_len = main_ids.numel() + sum(x.numel() for x in branches_ids)
         tokenized.append(
             {
@@ -233,6 +259,7 @@ def build_flat_linear_layout(
                 "branches_ids": branches_ids,
                 "main_len": main_ids.numel(),
                 "branches_lens": [x.numel() for x in branches_ids],
+                "answer_starts": answer_start_positions,
             }
         )
         max_len = max(max_len, total_len)
@@ -268,6 +295,16 @@ def build_flat_linear_layout(
         entries: List[Tuple[int, int, int, int]] = []
         branch_start_y: List[int] = []
         branch_pos1d_end = [-1 for _ in branch_sequences]
+        answer_token_starts: List[int] = []
+        answer_offsets_iter = iter(t["answer_starts"])
+        for idx, tokens in enumerate(branch_sequences):
+            if idx == 0 and main_len > 0:
+                answer_token_starts.append(int(tokens.numel()))
+                continue
+            offset_val = next(answer_offsets_iter, tokens.numel())
+            if offset_val < 0 or offset_val > tokens.numel():
+                offset_val = tokens.numel()
+            answer_token_starts.append(int(offset_val))
 
         for idx, (branch_id, tokens) in enumerate(zip(branch_ids, branch_sequences)):
             seq_len = tokens.numel()
@@ -288,6 +325,7 @@ def build_flat_linear_layout(
                     start_col = 0 if main_len == 0 else main_len
                 times = torch.arange(seq_len, device=device) + start_col
             branch_start_y.append(int(times[0].item()))
+
             for order, token in enumerate(tokens):
                 time_value = int(times[order].item())
                 entries.append((time_value, branch_id, order, int(token.item())))
@@ -342,6 +380,7 @@ def build_flat_linear_layout(
                 branch_start_y=branch_start_y,
                 branch_pos1d_end=branch_pos1d_end,
                 background_branch_id=0 if main_len > 0 else -1,
+                answer_token_starts=answer_token_starts,
             )
         )
 

@@ -72,6 +72,23 @@ class ParallelDecodingDataCollator:
         labels = layout.input_ids.clone()
         labels[layout.attention_mask == 0] = -100
 
+        pos2d = layout.pos2d
+        attn = layout.attention_mask
+        for batch_idx, meta in enumerate(layout.metadata):
+            for branch_idx, branch_id in enumerate(meta.branch_ids):
+                branch_pos = meta.branch_positions[branch_idx]
+                valid_mask = (pos2d[batch_idx, :, 0] == branch_pos) & (attn[batch_idx] == 1)
+                branch_indices = valid_mask.nonzero(as_tuple=True)[0]
+                if branch_indices.numel() == 0:
+                    continue
+                answer_offset = meta.answer_token_starts[branch_idx]
+                if answer_offset < 0 or answer_offset >= branch_indices.numel():
+                    cutoff = branch_indices.numel()
+                else:
+                    cutoff = answer_offset
+                if cutoff > 0:
+                    labels[batch_idx, branch_indices[:cutoff]] = -100
+
         return {
             "input_ids": layout.input_ids,
             "attention_mask": layout.attention_mask,

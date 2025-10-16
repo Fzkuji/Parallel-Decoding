@@ -364,10 +364,14 @@ def main():
         preview_sample = None
 
     if preview_sample is not None:
+        def _preview_text(text: str, limit: int = 200) -> str:
+            text = text.strip()
+            return text if len(text) <= limit else text[:limit] + "..."
+
         print("=== Preview sample ===")
-        print("Main:\n", preview_sample.get("main", ""))
+        print("Main:\n", _preview_text(preview_sample.get("main", "")))
         for idx, branch_text in enumerate(preview_sample.get("branches", []), start=1):
-            print(f"Branch {idx}:\n{branch_text}")
+            print(f"Branch {idx}:\n{_preview_text(branch_text)}")
         print("=====================")
 
     collator = ColumnarPretrainCollator(
