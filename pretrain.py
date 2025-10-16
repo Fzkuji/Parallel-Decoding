@@ -1,4 +1,5 @@
 import argparse
+import math
 from typing import Dict, List, Optional
 
 import torch
@@ -34,6 +35,7 @@ class FineWebColumnarDataset(IterableDataset):
         local_files_only: bool = False,
         streaming: bool = False,
         main_segments: int = 1,
+        max_total_tokens: Optional[int] = 4096,
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
@@ -46,6 +48,8 @@ class FineWebColumnarDataset(IterableDataset):
         self.local_files_only = local_files_only
         self.streaming = streaming
         self.main_segments = max(1, min(main_segments, self.total_segments))
+        self.expected_branches = max(0, self.total_segments - self.main_segments)
+        self.max_total_tokens = max_total_tokens if (max_total_tokens is None or max_total_tokens > 0) else None
 
     def _prepare_segment(self, token_ids: List[int]) -> List[int]:
         max_len = self.seq_length
@@ -72,22 +76,76 @@ class FineWebColumnarDataset(IterableDataset):
             clean_up_tokenization_spaces=False,
         )
 
-    def _build_sample(self, chunk: List[int]) -> Dict[str, List[str]]:
-        segments: List[List[int]] = []
-        for idx in range(self.total_segments):
-            start = idx * self.seq_length
-            end = start + self.seq_length
-            segment = self._prepare_segment(chunk[start:end])
-            segments.append(segment)
+    def _build_sample_from_text(self, text: str) -> Optional[Dict[str, List[str]]]:
+        if not text:
+            return None
+        normalized = text.replace("\r\n", "\n")
+        paragraphs = [paragraph.strip() for paragraph in normalized.split("\n") if paragraph.strip()]
+        if len(paragraphs) < 2:
+            return None
 
-        main_tokens: List[int] = []
-        for idx in range(self.main_segments):
-            main_tokens.extend(segments[idx])
-        main_text = self._decode_tokens(main_tokens)
+        token_budget = self.max_total_tokens
+        if token_budget is None:
+            token_budget = self.seq_length * self.total_segments
+        else:
+            token_budget = min(token_budget, self.seq_length * self.total_segments)
+        if token_budget <= 0:
+            token_budget = self.seq_length * self.total_segments
 
+        selected_paragraphs: List[str] = []
+        used_tokens = 0
+        for paragraph in paragraphs:
+            encoded = self.tokenizer(paragraph, add_special_tokens=False, return_attention_mask=False)
+            ids = encoded["input_ids"]
+            if not ids:
+                continue
+            if used_tokens + len(ids) > token_budget and selected_paragraphs:
+                break
+            if used_tokens + len(ids) > token_budget and not selected_paragraphs:
+                # paragraph itself exceeds budget; truncate tokens and decode back
+                truncated = ids[: token_budget]
+                paragraph = self._decode_tokens(self._prepare_segment(truncated))
+                used_tokens = token_budget
+                selected_paragraphs.append(paragraph)
+                break
+            selected_paragraphs.append(paragraph)
+            used_tokens += len(ids)
+            if used_tokens >= token_budget:
+                break
+
+        if len(selected_paragraphs) < 2:
+            return None
+
+        num_paragraphs = len(selected_paragraphs)
+        main_count = max(self.main_segments, min(num_paragraphs // 2, num_paragraphs - 1))
+        if main_count >= num_paragraphs:
+            main_count = num_paragraphs - 1
+        if main_count <= 0:
+            main_count = min(self.main_segments, num_paragraphs - 1)
+
+        main_paragraphs = selected_paragraphs[:main_count]
+        branch_candidates = selected_paragraphs[main_count:]
+        if not branch_candidates:
+            return None
+
+        main_text = "\n\n".join(main_paragraphs)
+
+        if self.expected_branches <= 0:
+            return {"main": main_text, "branches": []}
+
+        chunk_size = max(1, math.ceil(len(branch_candidates) / self.expected_branches))
         branch_texts: List[str] = []
-        for segment in segments[self.main_segments :]:
-            branch_texts.append(self._decode_tokens(segment))
+        for idx in range(self.expected_branches):
+            start = idx * chunk_size
+            if start >= len(branch_candidates):
+                break
+            end = min(len(branch_candidates), (idx + 1) * chunk_size)
+            branch_chunk = "\n\n".join(branch_candidates[start:end]).strip()
+            branch_texts.append(branch_chunk)
+
+        branch_texts = [b for b in branch_texts if b]
+        if not branch_texts:
+            return None
 
         return {"main": main_text, "branches": branch_texts}
 
@@ -109,26 +167,16 @@ class FineWebColumnarDataset(IterableDataset):
                 download_config=download_config,
             )
 
-        chunk_size = self.seq_length * self.total_segments
         produced = 0
-        buffer: List[int] = []
         for row in dataset:
             text = row.get("text", "")
-            if not text:
+            sample = self._build_sample_from_text(text)
+            if sample is None:
                 continue
-            tokenized = self.tokenizer(text, add_special_tokens=False, return_attention_mask=False)
-            tokens = tokenized["input_ids"]
-            if not tokens:
-                continue
-            buffer.extend(tokens)
-            while len(buffer) >= chunk_size:
-                chunk_tokens = buffer[:chunk_size]
-                del buffer[:chunk_size]
-                sample = self._build_sample(chunk_tokens)
-                yield sample
-                produced += 1
-                if self.max_samples is not None and produced >= self.max_samples:
-                    return
+            yield sample
+            produced += 1
+            if self.max_samples is not None and produced >= self.max_samples:
+                return
 
 
 class ColumnarPretrainCollator:
@@ -234,6 +282,12 @@ def parse_args():
     )
     parser.add_argument("--fp16", action="store_true", help="在 fp16 模式下训练")
     parser.add_argument("--bf16", action="store_true", help="在 bf16 模式下训练")
+    parser.add_argument(
+        "--max-total-tokens",
+        type=int,
+        default=4096,
+        help="单条原始文本在分段前允许使用的最大 token 数，将按段落切分并截断",
+    )
     return parser.parse_args()
 
 
@@ -278,6 +332,7 @@ def main():
         local_files_only=args.local_files_only,
         streaming=args.streaming,
         main_segments=args.main_segments,
+        max_total_tokens=args.max_total_tokens,
     )
 
     collator = ColumnarPretrainCollator(

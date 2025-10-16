@@ -66,7 +66,9 @@ python pretrain.py \
 - 结果会保存到 `--output-dir`（默认 `./pretrained-columnar`）。后续微调可把该目录作为 `train.py --model-name` 输入。
 - 若只能使用本地缓存数据，可加 `--local-files-only`。
 - `--learning-rate` 默认 `1e-4`，在显存紧张或 LoRA 训练时一般无需再调高，可按 batch 大小与收敛情况微调。
+- 预训练样本会按段落（换行）切分：首先从原文中截取不超过 `--max-total-tokens`（默认 4096）的内容，前半部分段落拼成主干，剩余段落按顺序均分到各个分支，确保模型看到完整背景再并行续写。
 - 若显存有限，可加 `--use-lora` 与 `--lora-*` 参数，仅训练 LoRA 适配器，实现低开销预训练。
+- `--max-total-tokens` 控制每条原始文本在分段前最多使用多少 token，可根据 seq_length × branch_count 调整，防止超长段落。
 - 多卡运行示例：
 
   ```bash
@@ -101,7 +103,7 @@ python train.py \
 - `--max-branches`：额外保留的问题数量，实际分支数 = `max_branches + 1`（包含主干）。样本问题不足时不会补空分支，超过上限则截断。
 - `--min-questions`：过滤掉问题数不足的 context。
 - `--gradient-accumulation-steps`、`--learning-rate`、`--warmup-ratio` 等与 `TrainingArguments` 一致。
-- `--learning-rate` 默认 `1e-4`，足以在多分支布局下稳定训练，如需更快收敛可在监控 loss 的前提下酌情增减。
+- `--learning-rate` 默认 `5e-5`，足以在多分支布局下稳定微调，如需更快收敛可在监控 loss 的前提下酌情增减。
 - 若显存紧张，可附加 `--use-lora` 及相关参数（`--lora-r`, `--lora-alpha`, `--lora-dropout`, `--lora-target-modules`），只更新少量 LoRA 权重，大幅节省显存。LoRA 训练完成后输出目录包含适配器权重，需要在推理和评估时同时指定底模。
 - 如果希望保留所有 SQuAD context（不对问题数做筛选），可以传入 `--min-questions 1 --max-branches 0`，模型会逐个问题构造样本。或者设置 `--min-questions 1 --max-branches N`，每条样本保留最多 `N+1` 个问题，避免因问题数不足被过滤。
 
